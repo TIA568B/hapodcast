@@ -714,8 +714,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     _arm_schedule()
 
-    # Reload (and thus re-arm) whenever options change in the UI.
-    entry.async_on_unload(entry.add_update_listener(_async_options_updated))
+    # Note: the options flow subclasses OptionsFlowWithReload, so Home Assistant
+    # reloads this entry automatically when options change -- which re-runs
+    # async_setup_entry and re-arms the schedule. We deliberately do NOT add an
+    # update listener here: combining a listener with a reloading options flow
+    # is deprecated (HA 2026.6) and would double-reload.
 
     _LOGGER.info(
         "%s Ready. Manage it in Settings -> Devices & services -> Daily "
@@ -727,11 +730,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         SERVICE_PLAY_HISTORY,
     )
     return True
-
-
-async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Reload the entry when options change so the schedule re-arms."""
-    await hass.config_entries.async_reload(entry.entry_id)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
