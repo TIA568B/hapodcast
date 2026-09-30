@@ -1,0 +1,21 @@
+# ===========================================================================
+# Snippet to merge into your existing Home Assistant configuration.yaml
+# ===========================================================================
+# Do NOT replace your whole configuration.yaml with this file. Copy the lines
+# you don't already have into your existing config, then restart HA once.
+# ---------------------------------------------------------------------------
+
+# 1. Load the pyscript integration + this app's config (podcast list, player).
+#    Using !include means edits to pyscript/config.yaml auto-reload pyscript.
+pyscript: !include pyscript/config.yaml
+
+# 2. Home Assistant's default config already includes this line. If yours does
+#    not, add it so the Daily Podcast Queue automation is loaded.
+automation: !include automations.yaml
+
+# 3. (Optional) Turn up logging so you can see the app's INCLUDE/SKIP/QUEUE
+#    lines in Settings -> System -> Logs.
+logger:
+  default: info
+  logs:
+    custom_components.pyscript: info
