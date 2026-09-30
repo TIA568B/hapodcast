@@ -7,6 +7,7 @@
   "issue_tracker": "https://github.com/TIA568B/hapodcast/issues",
   "codeowners": ["@TIA568B"],
   "iot_class": "local_polling",
-  "integration_type": "service",
+  "integration_type": "hub",
+  "single_config_entry": true,
   "requirements": ["feedparser==6.0.11"]
 }
