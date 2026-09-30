@@ -3,19 +3,40 @@
 # ===========================================================================
 # Do NOT replace your whole configuration.yaml with this file. Copy the lines
 # you don't already have into your existing config, then restart HA once.
+#
+# The integration itself is installed via HACS (see README). This snippet is
+# only the YAML configuration it reads.
 # ---------------------------------------------------------------------------
 
-# 1. Load the pyscript integration + this app's config (podcast list, player).
-#    Using !include means edits to pyscript/config.yaml auto-reload pyscript.
-pyscript: !include pyscript/config.yaml
+# 1. Configure the Daily Podcast Queue integration.
+#    THE podcast list lives here -- add / remove / reorder entries in this one
+#    ordered list; nothing else changes. `player` is your Sonos / Music
+#    Assistant target.
+daily_podcasts:
+  player: media_player.sonos_kitchen
+  podcasts:
+    - name: The Daily
+      feed_url: https://feeds.simplecast.com/54nAGcIl
+    - name: Up First
+      feed_url: https://feeds.npr.org/510318/podcast.xml
+    - name: Marketplace
+      feed_url: https://www.marketplace.org/feed/podcast/marketplace
+    - name: BBC Global News
+      feed_url: https://podcasts.files.bbci.co.uk/p02nq0gn.rss
+    - name: Science Friday
+      feed_url: https://feeds.simplecast.com/wjQvYtdl
+  # -- Optional settings (safe to omit) -------------------------------------
+  # timezone: America/New_York       # override; defaults to HA's local tz
+  # fetch_timeout: 20                 # per-feed HTTP timeout, seconds
+  # history_dir: daily_podcasts_history  # relative to your HA config dir
+  # record_only: false               # true = record daily but never auto-play
 
 # 2. Home Assistant's default config already includes this line. If yours does
 #    not, add it so the Daily Podcast Queue automation is loaded.
 automation: !include automations.yaml
 
-# 3. (Optional) Turn up logging so you can see the app's INCLUDE/SKIP/QUEUE
-#    lines in Settings -> System -> Logs.
+# 3. (Optional) See the integration's INCLUDE/SKIP/QUEUE lines in the logs.
 logger:
   default: info
   logs:
-    custom_components.pyscript: info
+    custom_components.daily_podcasts: info

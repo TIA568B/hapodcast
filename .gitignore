@@ -1,3 +1,7 @@
 .kiro/settings/mcp.json
 # Recorded daily podcast playlists (runtime data, not source)
+daily_podcasts_history/
 pyscript/podcast_history/
+# Python build artifacts
+__pycache__/
+*.pyc

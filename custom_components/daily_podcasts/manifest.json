@@ -1,0 +1,11 @@
+{
+  "domain": "daily_podcasts",
+  "name": "Daily Podcast Queue",
+  "version": "1.0.0",
+  "documentation": "https://github.com/TIA568B/hapodcast",
+  "issue_tracker": "https://github.com/TIA568B/hapodcast/issues",
+  "codeowners": ["@TIA568B"],
+  "iot_class": "local_polling",
+  "integration_type": "service",
+  "requirements": ["feedparser==6.0.11"]
+}

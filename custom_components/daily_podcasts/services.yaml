@@ -1,0 +1,97 @@
+build_queue:
+  name: Build today's podcast queue
+  description: >
+    Fetch each configured podcast feed, keep only episodes published today (in
+    the local timezone) in listening order, record the playlist to history, and
+    queue it on the Music Assistant player.
+  fields:
+    player:
+      name: Player
+      description: Music Assistant / Sonos media_player to queue onto. Defaults to the configured player.
+      required: false
+      example: media_player.sonos_kitchen
+      selector:
+        entity:
+          domain: media_player
+    tz:
+      name: Timezone
+      description: IANA timezone name used to decide "today". Defaults to HA's local timezone.
+      required: false
+      example: America/New_York
+      selector:
+        text:
+    dry_run:
+      name: Dry run
+      description: Log the plan without touching the player or writing history.
+      required: false
+      default: false
+      selector:
+        boolean:
+    record_only:
+      name: Record only
+      description: Record today's playlist to history but do not play it now.
+      required: false
+      default: false
+      selector:
+        boolean:
+
+play_history:
+  name: Play recorded podcast history
+  description: >
+    Replay one or more previously recorded daily playlists (catch-up). Days play
+    in chronological order, preserving each day's internal podcast order.
+    Selector precedence: date, then start/end, then since, then days, then all.
+  fields:
+    player:
+      name: Player
+      description: Music Assistant / Sonos media_player to queue onto. Defaults to the configured player.
+      required: false
+      example: media_player.sonos_kitchen
+      selector:
+        entity:
+          domain: media_player
+    date:
+      name: Single date
+      description: Replay just this one recorded day (YYYY-MM-DD).
+      required: false
+      example: "2026-09-22"
+      selector:
+        text:
+    start:
+      name: Range start
+      description: Inclusive start of a date range (YYYY-MM-DD). Either side optional.
+      required: false
+      example: "2026-09-20"
+      selector:
+        text:
+    end:
+      name: Range end
+      description: Inclusive end of a date range (YYYY-MM-DD). Either side optional.
+      required: false
+      example: "2026-09-24"
+      selector:
+        text:
+    since:
+      name: Since date
+      description: Replay everything recorded from this date through today (YYYY-MM-DD).
+      required: false
+      example: "2026-09-20"
+      selector:
+        text:
+    days:
+      name: Last N days
+      description: Replay the last N recorded days.
+      required: false
+      example: 5
+      selector:
+        number:
+          min: 1
+          max: 60
+          mode: box
+    dry_run:
+      name: Dry run
+      description: Log what would play without touching the player.
+      required: false
+      default: false
+      selector:
+        boolean:
