@@ -1,41 +1,19 @@
-# ---------------------------------------------------------------------------
-# Daily Podcast Queue automation
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# OPTIONAL — you do NOT need this file for a normal install.
+# ===========================================================================
+# The daily build runs on the integration's OWN schedule (set the time in the
+# UI: Configure -> Settings). No automation is required for daily playback.
 #
-# If you already have an automations.yaml, copy just the list item below into
-# it (don't duplicate the file). Home Assistant's default configuration.yaml
-# already contains `automation: !include automations.yaml`.
-#
-# The trigger time lives here (default 06:00 local). Change `at:` to reschedule.
+# This file is only a ready-to-adapt example for a one-tap "catch-up since I
+# last listened" button. To use it:
+#   1. Create an input_datetime helper (Settings -> Devices & services ->
+#      Helpers -> Create helper -> Date and/or time), e.g.
+#      input_datetime.podcasts_last_played.
+#   2. Add the automation below to your automations (via the UI, or by copying
+#      the list item into your existing automations.yaml).
+#   3. Trigger it from a dashboard button, NFC tag, or voice.
 # ---------------------------------------------------------------------------
 
-- id: daily_podcast_queue
-  alias: Daily Podcast Queue
-  description: >
-    Every morning, build a queue of podcasts that published a new episode today
-    and play them on the configured Sonos speaker via Music Assistant, in
-    listening order, skipping any podcast with nothing new.
-  trigger:
-    - platform: time
-      at: "06:00:00"
-  # Allow manual re-runs from the UI without waiting for the trigger.
-  mode: single
-  action:
-    - service: daily_podcasts.build_queue
-      # No data needed -- the player + podcast list come from the integration's
-      # configuration.yaml. You can pass overrides here for testing, e.g.:
-      #   data:
-      #     dry_run: true
-      #     player: media_player.sonos_office
-
-# ---------------------------------------------------------------------------
-# Catch-up playback is on-demand, so it doesn't need a schedule -- just call
-# daily_podcasts.play_history from Developer Tools > Actions (see README).
-#
-# If you'd like a button in the UI to "play everything since I last listened",
-# an input_datetime + script is the tidiest route. Minimal example you can
-# adapt (define an input_datetime.podcasts_last_played helper first):
-#
 # - id: podcast_catch_up_since_helper
 #   alias: Podcast Catch-up (since helper date)
 #   trigger: []            # triggered manually, or wire to a button/NFC tag
@@ -43,4 +21,3 @@
 #     - service: daily_podcasts.play_history
 #       data:
 #         since: "{{ states('input_datetime.podcasts_last_played') | as_datetime | as_local | strftime('%Y-%m-%d') }}"
-# ---------------------------------------------------------------------------

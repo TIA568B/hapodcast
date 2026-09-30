@@ -32,8 +32,10 @@ from typing import Any
 
 import voluptuous as vol
 
+from homeassistant.config_entries import ConfigEntry, SOURCE_IMPORT
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.event import async_track_time_change
 from homeassistant.helpers.typing import ConfigType
 
 from .const import (
@@ -46,6 +48,8 @@ from .const import (
     ATTR_SINCE,
     ATTR_START,
     ATTR_TZ,
+    CONF_AT,
+    CONF_ENABLED,
     CONF_FEED_URL,
     CONF_FETCH_TIMEOUT,
     CONF_HISTORY_DIR,
@@ -55,6 +59,8 @@ from .const import (
     CONF_RECORD_ONLY,
     CONF_TIMEZONE,
     DATE_FMT,
+    DEFAULT_AT,
+    DEFAULT_ENABLED,
     DEFAULT_FETCH_TIMEOUT,
     DEFAULT_HISTORY_DIR,
     DEFAULT_RECORD_ONLY,
@@ -340,20 +346,52 @@ def _build_episode_list(
 # ---------------------------------------------------------------------------
 
 
+def _entry_config(hass: HomeAssistant) -> dict[str, Any]:
+    """Return the merged config for the active config entry (options first)."""
+    store = hass.data.get(DOMAIN, {})
+    entry: ConfigEntry | None = store.get("entry")
+    if entry is None:
+        return {}
+    # Options hold the live, UI-editable settings; fall back to entry.data.
+    merged = dict(entry.data)
+    merged.update(entry.options or {})
+    return merged
+
+
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
-    """Set up the Daily Podcast Queue integration from YAML."""
+    """Import any YAML config into a config entry (one-time migration)."""
     conf = config.get(DOMAIN)
-    if conf is None:
-        _LOGGER.warning(
-            "%s No `daily_podcasts:` config found; integration idle. "
-            "Add a player and podcasts list to configuration.yaml.",
+    if not conf:
+        # Nothing in YAML; the integration is managed entirely via the UI.
+        return True
+
+    # Only import once; if an entry already exists, leave it alone.
+    if hass.config_entries.async_entries(DOMAIN):
+        _LOGGER.info(
+            "%s YAML config present but a config entry already exists; "
+            "manage settings in the UI (Settings -> Devices & services). "
+            "The YAML block is now ignored.",
             LOG_PREFIX,
         )
-        # Still register services so they exist, but they'll warn without config.
-        conf = {}
+        return True
 
+    _LOGGER.info(
+        "%s Importing YAML configuration into a UI config entry. You can "
+        "remove the `daily_podcasts:` block from configuration.yaml afterwards.",
+        LOG_PREFIX,
+    )
+    hass.async_create_task(
+        hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": SOURCE_IMPORT}, data=conf
+        )
+    )
+    return True
+
+
+async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Set up the integration from a config entry (the UI-managed path)."""
     hass.data.setdefault(DOMAIN, {})
-    hass.data[DOMAIN]["config"] = conf
+    hass.data[DOMAIN]["entry"] = entry
 
     async def _async_queue_media(player: str, episodes: list[dict], dry_run: bool):
         """Send the ordered episodes to Music Assistant in one call."""
@@ -391,7 +429,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         )
 
     def _history_base_dir() -> str:
-        cfg = hass.data[DOMAIN]["config"]
+        cfg = _entry_config(hass)
         rel = cfg.get(CONF_HISTORY_DIR, DEFAULT_HISTORY_DIR)
         if os.path.isabs(rel):
             return rel
@@ -425,22 +463,24 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
                 err,
             )
 
-    # --- Service: build_queue --------------------------------------------
-    async def handle_build_queue(call: ServiceCall) -> None:
-        cfg = hass.data[DOMAIN]["config"]
+    # --- Core build routine (used by service + daily scheduler) ----------
+    async def _run_build(player=None, tz_name=None, dry_run=False, record_only=None):
+        cfg = _entry_config(hass)
         podcasts = cfg.get(CONF_PODCASTS) or []
         if not podcasts:
             _LOGGER.warning(
-                "%s No podcasts configured; nothing to do.", LOG_PREFIX
+                "%s No podcasts configured; add some in Settings -> Devices & "
+                "services -> Daily Podcast Queue -> Configure.",
+                LOG_PREFIX,
             )
             return
 
-        player = call.data.get(ATTR_PLAYER) or cfg.get(CONF_PLAYER)
-        tz_name = call.data.get(ATTR_TZ) or cfg.get(CONF_TIMEZONE)
-        dry_run = bool(call.data.get(ATTR_DRY_RUN, False))
-        record_only = bool(
-            call.data.get(ATTR_RECORD_ONLY, cfg.get(CONF_RECORD_ONLY, False))
-        )
+        player = player or cfg.get(CONF_PLAYER)
+        tz_name = tz_name or cfg.get(CONF_TIMEZONE)
+        dry_run = bool(dry_run)
+        if record_only is None:
+            record_only = cfg.get(CONF_RECORD_ONLY, DEFAULT_RECORD_ONLY)
+        record_only = bool(record_only)
         fetch_timeout = cfg.get(CONF_FETCH_TIMEOUT, DEFAULT_FETCH_TIMEOUT)
         local_tz = _resolve_local_tz(hass, tz_name)
 
@@ -454,7 +494,6 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
             record_only,
         )
 
-        # Blocking fetch/parse loop runs in the executor.
         included, skipped, errors = await hass.async_add_executor_job(
             _build_episode_list, podcasts, local_tz, fetch_timeout
         )
@@ -492,6 +531,15 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
             return
 
         await _async_queue_media(player, included, dry_run)
+
+    # --- Service: build_queue --------------------------------------------
+    async def handle_build_queue(call: ServiceCall) -> None:
+        await _run_build(
+            player=call.data.get(ATTR_PLAYER),
+            tz_name=call.data.get(ATTR_TZ),
+            dry_run=call.data.get(ATTR_DRY_RUN, False),
+            record_only=call.data.get(ATTR_RECORD_ONLY),
+        )
 
     # --- Service: play_history -------------------------------------------
     def _parse_date_arg(value, label) -> dt.date:
@@ -544,7 +592,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         return (payload or {}).get("episodes", []) or []
 
     async def handle_play_history(call: ServiceCall) -> None:
-        cfg = hass.data[DOMAIN]["config"]
+        cfg = _entry_config(hass)
         player = call.data.get(ATTR_PLAYER) or cfg.get(CONF_PLAYER)
         dry_run = bool(call.data.get(ATTR_DRY_RUN, False))
         local_tz = _resolve_local_tz(hass, cfg.get(CONF_TIMEZONE))
@@ -609,19 +657,88 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         )
         await _async_queue_media(player, combined, dry_run)
 
-    hass.services.async_register(
-        DOMAIN, SERVICE_BUILD_QUEUE, handle_build_queue, schema=BUILD_QUEUE_SCHEMA
-    )
-    hass.services.async_register(
-        DOMAIN, SERVICE_PLAY_HISTORY, handle_play_history, schema=PLAY_HISTORY_SCHEMA
-    )
+    # Register services once (they read the live entry config each call).
+    if not hass.services.has_service(DOMAIN, SERVICE_BUILD_QUEUE):
+        hass.services.async_register(
+            DOMAIN, SERVICE_BUILD_QUEUE, handle_build_queue, schema=BUILD_QUEUE_SCHEMA
+        )
+    if not hass.services.has_service(DOMAIN, SERVICE_PLAY_HISTORY):
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_PLAY_HISTORY,
+            handle_play_history,
+            schema=PLAY_HISTORY_SCHEMA,
+        )
+
+    # --- Daily scheduler (internal; no automations.yaml needed) ----------
+    async def _scheduled_run(now):
+        _LOGGER.info("%s Scheduled daily run triggered at %s", LOG_PREFIX, now)
+        await _run_build()
+
+    def _arm_schedule() -> None:
+        """(Re)arm the daily time trigger from the current options."""
+        # Cancel any previous timer.
+        cancel = hass.data[DOMAIN].pop("cancel_timer", None)
+        if cancel:
+            cancel()
+
+        cfg = _entry_config(hass)
+        if not cfg.get(CONF_ENABLED, DEFAULT_ENABLED):
+            _LOGGER.info(
+                "%s Daily auto-run is disabled; scheduler not armed.", LOG_PREFIX
+            )
+            return
+
+        at = str(cfg.get(CONF_AT, DEFAULT_AT))
+        try:
+            parts = [int(p) for p in at.split(":")]
+            while len(parts) < 3:
+                parts.append(0)
+            hour, minute, second = parts[0], parts[1], parts[2]
+        except (ValueError, IndexError):
+            _LOGGER.error(
+                "%s Invalid trigger time %r; using %s.", LOG_PREFIX, at, DEFAULT_AT
+            )
+            hour, minute, second = 6, 0, 0
+
+        hass.data[DOMAIN]["cancel_timer"] = async_track_time_change(
+            hass, _scheduled_run, hour=hour, minute=minute, second=second
+        )
+        _LOGGER.info(
+            "%s Daily run scheduled for %02d:%02d:%02d local time.",
+            LOG_PREFIX,
+            hour,
+            minute,
+            second,
+        )
+
+    _arm_schedule()
+
+    # Reload (and thus re-arm) whenever options change in the UI.
+    entry.async_on_unload(entry.add_update_listener(_async_options_updated))
 
     _LOGGER.info(
-        "%s Ready. Services: %s.%s, %s.%s",
+        "%s Ready. Manage it in Settings -> Devices & services -> Daily "
+        "Podcast Queue -> Configure. Services: %s.%s, %s.%s",
         LOG_PREFIX,
         DOMAIN,
         SERVICE_BUILD_QUEUE,
         DOMAIN,
         SERVICE_PLAY_HISTORY,
     )
+    return True
+
+
+async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Reload the entry when options change so the schedule re-arms."""
+    await hass.config_entries.async_reload(entry.entry_id)
+
+
+async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Unload the config entry: cancel the timer and drop stored state."""
+    store = hass.data.get(DOMAIN, {})
+    cancel = store.pop("cancel_timer", None)
+    if cancel:
+        cancel()
+    store.pop("entry", None)
     return True

@@ -1,7 +1,8 @@
 {
   "domain": "daily_podcasts",
   "name": "Daily Podcast Queue",
-  "version": "1.0.0",
+  "version": "1.1.0",
+  "config_flow": true,
   "documentation": "https://github.com/TIA568B/hapodcast",
   "issue_tracker": "https://github.com/TIA568B/hapodcast/issues",
   "codeowners": ["@TIA568B"],

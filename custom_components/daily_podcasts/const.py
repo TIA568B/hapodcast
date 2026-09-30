@@ -2,7 +2,7 @@
 
 DOMAIN = "daily_podcasts"
 
-# Config keys
+# Config / option keys
 CONF_PLAYER = "player"
 CONF_PODCASTS = "podcasts"
 CONF_NAME = "name"
@@ -11,11 +11,23 @@ CONF_TIMEZONE = "timezone"
 CONF_FETCH_TIMEOUT = "fetch_timeout"
 CONF_HISTORY_DIR = "history_dir"
 CONF_RECORD_ONLY = "record_only"
+CONF_AT = "at"  # daily trigger time, "HH:MM:SS"
+CONF_ENABLED = "enabled"  # daily auto-run on/off
 
 # Defaults
 DEFAULT_FETCH_TIMEOUT = 20
 DEFAULT_HISTORY_DIR = "daily_podcasts_history"
 DEFAULT_RECORD_ONLY = False
+DEFAULT_AT = "06:00:00"
+DEFAULT_ENABLED = True
+
+# Options-flow menu step ids
+STEP_INIT = "init"
+STEP_SETTINGS = "settings"
+STEP_ADD = "add_podcast"
+STEP_REMOVE = "remove_podcast"
+STEP_MOVE_UP = "move_up"
+STEP_MOVE_DOWN = "move_down"
 
 # Services
 SERVICE_BUILD_QUEUE = "build_queue"

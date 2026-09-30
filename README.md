@@ -7,11 +7,13 @@ skipping any podcast with nothing new.
 
 It also **records each day's playlist**, so you can replay past days later — play
 catch-up after a holiday, for example — even after those episodes have aged out
-of the feeds. The daily automation runs every morning whether you're home or
-away, so history builds up on its own; you just replay it when you're back.
+of the feeds. It runs every morning on its own schedule whether you're home or
+away, so history builds up automatically; you just replay it when you're back.
 
-No external API, no cloud service — just the podcasts' own RSS feeds. The
-podcast list is a single ordered YAML list you edit in one place.
+No external API, no cloud service — just the podcasts' own RSS feeds.
+**Everything is managed from the Home Assistant UI** — no YAML editing. You add,
+remove, and reorder podcasts and set the run time from the integration's
+**Configure** screen.
 
 ---
 
@@ -28,7 +30,8 @@ Then:
 1. In the dialog that opens, confirm adding **TIA568B/hapodcast** as an
    **Integration** custom repository.
 2. Select **Download**, then **restart Home Assistant**.
-3. Add the YAML configuration and automation below.
+3. Go to **Settings → Devices & services → Add integration**, search for
+   **Daily Podcast Queue**, and follow the setup (see [Set it up](#set-it-up)).
 
 > The button uses a [My Home Assistant](https://my.home-assistant.io) link: it
 > opens *your own* instance (the URL is stored only in your browser) and needs
@@ -45,8 +48,8 @@ HA `config/custom_components/` directory and restart. Home Assistant installs th
 
 ## How it works
 
-1. At the scheduled time, the automation calls the service
-   `daily_podcasts.build_queue`.
+1. At the time you set, the integration's built-in daily schedule runs the same
+   logic as the `daily_podcasts.build_queue` service (no automation needed).
 2. For each podcast in your list (in order), it fetches the RSS feed fresh over
    HTTP (cache-busting headers, so "published today" is decided on current
    data), parses the newest episode's audio enclosure URL and publish date.
@@ -72,13 +75,17 @@ To replay stored days later, call `daily_podcasts.play_history` — see
 ```
 custom_components/
   daily_podcasts/
-    __init__.py        # the integration logic + services
+    __init__.py        # the integration logic + services + daily scheduler
+    config_flow.py     # the UI setup + options (manage) screens
     const.py           # constants
-    manifest.json      # domain, version, feedparser requirement
+    manifest.json      # domain, version, config_flow, feedparser requirement
     services.yaml      # service definitions for the HA UI
+    strings.json       # UI strings
+    translations/
+      en.json          # English UI translations
 hacs.json              # HACS metadata (repo root)
-automations.yaml       # the daily 6:00 AM trigger
-configuration.yaml.snippet  # YAML config to merge into configuration.yaml
+automations.yaml       # OPTIONAL example (catch-up button); not required
+configuration.yaml.snippet  # OPTIONAL YAML import path; not required
 README.md
 ```
 
@@ -98,74 +105,49 @@ recorded playlists. That's runtime data, so it's git-ignored.
 
 ---
 
-## Configure it
+## Set it up
 
-After installing and restarting, add the configuration. Merge
-`configuration.yaml.snippet` into your `configuration.yaml` — the core of it:
+Everything is done in the UI — no YAML.
 
-```yaml
-daily_podcasts:
-  player: media_player.sonos_kitchen
-  podcasts:
-    - name: The Daily
-      feed_url: https://feeds.simplecast.com/54nAGcIl
-    - name: Up First
-      feed_url: https://feeds.npr.org/510318/podcast.xml
-    # add, delete, or move lines here — nothing else changes
-```
+1. **Settings → Devices & services → Add integration →** search **Daily Podcast
+   Queue**.
+2. In the setup dialog, choose your **Player** (the Sonos / Music Assistant
+   `media_player`), the **daily run time** (default 06:00), and whether it should
+   **run automatically each day**.
+3. Finish. Then open the integration's **Configure** button to add your
+   podcasts.
 
-Then add the automation (from `automations.yaml`) so it runs each morning.
-`automation: !include automations.yaml` is already in HA's default config.
+Check **Settings → System → Logs** for lines beginning `[daily_podcasts]`.
 
-Restart (or reload YAML) after editing configuration. Check
-**Settings → System → Logs** for lines beginning `[daily_podcasts]`.
+> **Coming from an older YAML setup?** If you still have a `daily_podcasts:`
+> block in `configuration.yaml`, the integration imports it into a UI entry once
+> on startup, then ignores the YAML. You can delete the block afterwards and
+> manage everything from Configure. New installs don't need any YAML at all.
 
 ---
 
-## What to edit
+## Manage it (all in the UI)
 
-### Add / remove / reorder a podcast
+Open **Settings → Devices & services → Daily Podcast Queue → Configure**. You get
+a small menu:
 
-Edit the `podcasts:` list under `daily_podcasts:` in **`configuration.yaml`** —
-this is the only place you touch. List them in the exact order you want to hear
-them. Each entry needs a `name` (used in logs) and a `feed_url` (the RSS feed).
+- **Settings** — change the player, the daily run time, the automatic-run
+  on/off switch, record-only mode, and an optional timezone override.
+- **Add a podcast** — enter a name and RSS feed URL. It's added to the end of
+  the list; the URL is validated.
+- **Remove a podcast** — pick one from the list to delete.
+- **Move a podcast earlier / later** — reorder the list; playback order follows
+  it.
 
-- **Add**: append a new `- name: / feed_url:` entry where you want it in the order.
-- **Remove**: delete its two lines.
-- **Reorder**: move the entry up or down; playback order follows list order.
+Changes take effect immediately (the integration reloads itself and re-arms the
+daily schedule). No restart, no YAML.
 
-Then reload YAML configuration (or restart). No code changes anywhere else.
+**Record-only mode**: turn it on in Settings if you never want the morning
+auto-play and instead always listen via catch-up. History is still recorded
+every day.
 
-### Change the Sonos / Music Assistant target
-
-Set `player:` under `daily_podcasts:` to your target entity, e.g.
-`media_player.sonos_office`. You can also override per-run from the automation
-or a service call with `data: { player: media_player.sonos_office }`.
-
-### Change the trigger time
-
-Edit the `at:` value in **`automations.yaml`** (default `"06:00:00"`, local
-time):
-
-```yaml
-trigger:
-  - platform: time
-    at: "07:30:00"
-```
-
-### Other optional settings (under `daily_podcasts:`)
-
-```yaml
-daily_podcasts:
-  # timezone: America/New_York          # override; defaults to HA's local tz
-  # fetch_timeout: 20                    # per-feed HTTP timeout in seconds
-  # history_dir: daily_podcasts_history  # where daily playlists are saved
-  # record_only: false                   # true = record daily but never
-  #                                       #        auto-play; play on demand
-```
-
-Set `record_only: true` if you never want the morning auto-play and instead
-always listen via catch-up. History is still recorded every day.
+**Turn the daily run off**: uncheck "Run automatically each day" in Settings.
+You can still trigger it manually or via the service any time.
 
 ---
 
@@ -175,7 +157,6 @@ Any of these:
 
 - **Developer Tools → Actions**: pick **Daily Podcast Queue: Build today's
   podcast queue** (`daily_podcasts.build_queue`), Perform action.
-- **Settings → Automations → Daily Podcast Queue → Run**.
 - YAML with overrides, e.g. a dry run against another speaker:
 
   ```yaml
@@ -252,10 +233,12 @@ log exactly what would play without touching the speaker.
 all recorded days). Only days that actually have a recorded file are included;
 requesting a day with no file is silently skipped.
 
-**A tidy "since I last listened" button.** Create an `input_datetime` helper
-(e.g. `input_datetime.podcasts_last_played`), point a button/NFC tag at the
-commented automation in `automations.yaml`, and it will replay everything since
-that date. See the example block in `automations.yaml`.
+**A tidy "since I last listened" button.** The daily build is scheduled inside
+the integration, so you don't need any automation for normal use. If you'd like
+a one-tap catch-up button, create an `input_datetime` helper (e.g.
+`input_datetime.podcasts_last_played`) and point a dashboard button / NFC tag at
+`daily_podcasts.play_history` with `since:` set from that helper. The optional
+`automations.yaml` in this repo has a ready-to-adapt example.
 
 ---
 
@@ -263,7 +246,9 @@ that date. See the example block in `automations.yaml`.
 
 | Requirement | How |
 | --- | --- |
-| Edit the list, nothing else | `podcasts:` is data in one YAML list; one loop iterates it |
+| Manage without YAML | Config flow + options menu (add/remove/reorder/settings) in the UI |
+| Edit the list, nothing else | The ordered podcast list is the one thing you edit, from Configure |
+| Daily run without automations.yaml | Built-in schedule via `async_track_time_change`, re-armed on options change |
 | Preserve order while skipping | Included items keep original list order; skipped/failed simply omitted |
 | Published-today only, local tz | Each episode's UTC pubDate is converted to `hass.config.time_zone` before comparing dates |
 | Fresh data | Feeds are fetched over HTTP with no-cache headers at trigger time |
@@ -282,10 +267,12 @@ that date. See the example block in `automations.yaml`.
 - **Integration not found after install**: make sure you **restarted** HA after
   downloading in HACS, and that `custom_components/daily_podcasts/manifest.json`
   exists. Check the logs for load errors.
-- **No `daily_podcasts.*` services**: the integration loads only when
-  `daily_podcasts:` is present in `configuration.yaml`. Add the config block and
-  reload/restart. Check logs for a config validation error (a bad `feed_url` or
-  missing `player` will fail validation).
+- **No `daily_podcasts.*` services**: make sure you added the integration from
+  **Settings → Devices & services → Add integration**. The services register
+  once the config entry is set up. Check the logs for load errors.
+- **Nothing plays in the morning**: confirm "Run automatically each day" is on
+  and the run time is what you expect (Configure → Settings). The log shows
+  `Daily run scheduled for HH:MM:SS` when armed.
 - **`feedparser` errors on startup**: HA installs it from the manifest; watch
   the startup logs. A restart usually resolves a transient install.
 - **Timezone looks wrong**: this uses `hass.config.time_zone`. Set the

@@ -1,0 +1,84 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Daily Podcast Queue",
+        "description": "Pick the Music Assistant / Sonos player and the time the daily queue should build. You'll add podcasts next, from Configure.",
+        "data": {
+          "player": "Player",
+          "at": "Daily run time",
+          "enabled": "Run automatically each day",
+          "record_only": "Record only (don't auto-play)"
+        }
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "Daily Podcast Queue is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Daily Podcast Queue",
+        "description": "Manage your podcasts and settings.",
+        "menu_options": {
+          "settings": "Settings (player, time, record-only)",
+          "add_podcast": "Add a podcast",
+          "remove_podcast": "Remove a podcast",
+          "move_up": "Move a podcast earlier",
+          "move_down": "Move a podcast later"
+        }
+      },
+      "settings": {
+        "title": "Settings",
+        "data": {
+          "player": "Player",
+          "at": "Daily run time",
+          "enabled": "Run automatically each day",
+          "record_only": "Record only (don't auto-play)",
+          "timezone": "Timezone override (optional, e.g. America/New_York)"
+        }
+      },
+      "add_podcast": {
+        "title": "Add a podcast",
+        "description": "Add it at the end of your list. Reorder afterwards from the menu.",
+        "data": {
+          "name": "Name",
+          "feed_url": "RSS feed URL"
+        }
+      },
+      "remove_podcast": {
+        "title": "Remove a podcast",
+        "data": {
+          "podcast": "Podcast to remove"
+        }
+      },
+      "move_up": {
+        "title": "Move a podcast earlier",
+        "data": {
+          "podcast": "Podcast to move earlier"
+        }
+      },
+      "move_down": {
+        "title": "Move a podcast later",
+        "data": {
+          "podcast": "Podcast to move later"
+        }
+      }
+    },
+    "error": {
+      "invalid_url": "That doesn't look like a valid URL.",
+      "name_required": "Please enter a name."
+    }
+  },
+  "services": {
+    "build_queue": {
+      "name": "Build today's podcast queue",
+      "description": "Fetch each feed, keep episodes published today, record the playlist, and queue it on the player."
+    },
+    "play_history": {
+      "name": "Play recorded podcast history",
+      "description": "Replay recorded daily playlists (catch-up), in chronological order."
+    }
+  }
+}
