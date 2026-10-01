@@ -130,6 +130,9 @@ custom_components/
     strings.json       # UI strings
     translations/
       en.json          # English UI translations
+    frontend/
+      __init__.py              # serves + auto-registers the card
+      daily-podcasts-card.js   # the management dashboard card
 hacs.json              # HACS metadata (repo root)
 automations.yaml       # OPTIONAL example (catch-up button); not required
 configuration.yaml.snippet  # OPTIONAL YAML import path; not required
@@ -179,8 +182,30 @@ Check **Settings → System → Logs** for lines beginning `[daily_podcasts]`.
 
 ## Manage it (all in the UI)
 
-Open **Settings → Devices & services → Daily Podcast Queue → Configure**. You get
-a small menu:
+### The management card (recommended)
+
+For a single-screen experience, add the **Daily Podcasts** dashboard card. It
+lets you add, remove, edit the name/URL/catch-up of each podcast, and
+**drag to reorder** — all on one screen — then **Save**.
+
+The card ships with the integration and auto-registers itself (Lovelace storage
+mode). To add it: edit a dashboard → **Add card** → search **Daily Podcasts**
+(or add a manual card with `type: custom:daily-podcasts-card`). No separate
+install, no resource to add by hand.
+
+> If the card doesn't appear in the picker right after installing, hard-refresh
+> the browser (Cmd/Ctrl+Shift+R) so the new resource loads. In **YAML-mode**
+> dashboards, add the resource manually:
+> `url: /daily_podcasts/daily-podcasts-card.js`, `type: module`.
+>
+> Under the hood the card uses two services you can also call yourself:
+> `daily_podcasts.list_podcasts` (returns the list) and
+> `daily_podcasts.set_podcasts` (replaces the whole ordered list).
+
+### The Configure menu (alternative)
+
+Prefer not to use a dashboard card? **Settings → Devices & services → Daily
+Podcast Queue → Configure** gives the same management via a step menu:
 
 - **Settings** — change the player, the time to prepare the daily playlist, the
   "prepare automatically each day" on/off switch, the **max catch-up look-back

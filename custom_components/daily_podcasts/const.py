@@ -1,6 +1,33 @@
 """Constants for the Daily Podcast Queue integration."""
 
+import json
+from pathlib import Path
+
 DOMAIN = "daily_podcasts"
+
+# Integration version, read from manifest.json (single source of truth).
+try:
+    _MANIFEST = json.loads(
+        (Path(__file__).parent / "manifest.json").read_text(encoding="utf-8")
+    )
+    INTEGRATION_VERSION = _MANIFEST.get("version", "0.0.0")
+except Exception:  # noqa: BLE001
+    INTEGRATION_VERSION = "0.0.0"
+
+# Frontend (embedded Lovelace card) serving.
+URL_BASE = "/daily_podcasts"
+JSMODULES = [
+    {
+        "name": "Daily Podcasts Card",
+        "filename": "daily-podcasts-card.js",
+        "version": INTEGRATION_VERSION,
+    },
+]
+
+# WebSocket + management service names.
+WS_VERSION = f"{DOMAIN}/version"
+SERVICE_LIST_PODCASTS = "list_podcasts"
+SERVICE_SET_PODCASTS = "set_podcasts"
 
 # Config / option keys
 CONF_PLAYER = "player"
