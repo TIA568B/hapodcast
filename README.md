@@ -62,8 +62,8 @@ HA `config/custom_components/` directory and restart. Home Assistant installs th
 1. At the time you set, the integration's built-in daily schedule runs — in
    "prepare only" mode (`build_queue` with `play: false`). It never plays.
 2. For each podcast in your list (in order), it fetches the RSS feed fresh over
-   HTTP (cache-busting headers, so "published today" is decided on current
-   data) and parses every episode's audio enclosure URL and publish date.
+   HTTP (cache-busting headers, so what's "new" is decided on current data) and
+   parses every episode's audio enclosure URL and publish date.
 3. It keeps **all** episodes published **since that podcast was last prepared**,
    in your Home Assistant timezone — so a feed that drops more than one episode
    in a day contributes all of them (ordered oldest-first within that feed).
@@ -107,8 +107,8 @@ HA `config/custom_components/` directory and restart. Home Assistant installs th
    [Catch-up](#catch-up-replay-past-days)).
 
 Failures are isolated: a single unreachable or malformed feed is logged and the
-rest of the list still plays. If nothing published today, it logs that and
-leaves the speaker alone (and writes no history file for that day).
+rest of the list still plays. If nothing is new since the last run, it logs that
+and leaves the speaker alone (and writes no history file).
 
 To replay stored days later, call `daily_podcasts.play_history` — see
 [Catch-up: replay past days](#catch-up-replay-past-days).
@@ -362,6 +362,19 @@ ready-to-adapt example.
 - **The button records but doesn't play**: check the log line — if you see
   `play=False`, the call passed `play: false`. The button should call
   `build_queue` with no `play` (defaults to true) or `play: true`.
+- **First run only offers today (new install or just upgraded)**: that's by
+  design. Each podcast's catch-up high-water mark starts empty, so the first
+  prepare offers **today only** and sets the mark from there; every run after
+  that is gap-proof. If episodes you hadn't listened to yet (e.g. a weekend's
+  worth) are sitting unplayed when you first run it, grab them with the
+  **catch-up** button (`daily_podcasts.play_history`) — only days the integration
+  has already recorded are available there.
+- **A single podcast keeps re-queuing or never catches up**: catch-up relies on
+  stable feed GUIDs and publish dates. If a feed rewrites GUIDs or omits dates,
+  the mark can't track it cleanly — turn that podcast's **catch-up off** (today
+  only) via Configure → Edit a podcast. The high-water marks live in
+  `.storage/daily_podcasts_hwm`; deleting that file resets catch-up (next run =
+  today only again).
 - **`feedparser` errors on startup**: HA installs it from the manifest; watch
   the startup logs. A restart usually resolves a transient install.
 - **Timezone looks wrong**: this uses `hass.config.time_zone`. Set the
