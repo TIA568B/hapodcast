@@ -130,9 +130,9 @@ custom_components/
     strings.json       # UI strings
     translations/
       en.json          # English UI translations
-    frontend/
-      __init__.py              # serves + auto-registers the card
-      daily-podcasts-card.js   # the management dashboard card
+    frontend.py         # serves/registers the sidebar panel
+    www/
+      daily-podcasts-panel.js  # full-screen podcast manager
 hacs.json              # HACS metadata (repo root)
 automations.yaml       # OPTIONAL example (catch-up button); not required
 configuration.yaml.snippet  # OPTIONAL YAML import path; not required
@@ -182,31 +182,25 @@ Check **Settings → System → Logs** for lines beginning `[daily_podcasts]`.
 
 ## Manage it (all in the UI)
 
-### The management card (recommended)
+### The Daily Podcasts sidebar panel (recommended)
 
-For a single-screen experience, add the **Daily Podcasts** dashboard card. It
-lets you add, remove, edit the name/URL/catch-up of each podcast, and
-**drag to reorder** — all on one screen — then **Save**.
+The integration now provides a dedicated **Daily Podcasts** item in the Home
+Assistant sidebar — similar to the Shopping List panel. It opens a full-screen
+management view where you can add, remove, edit, and drag-reorder podcasts on a
+single screen, then save the entire list atomically.
 
-The card ships with the integration and auto-registers itself (Lovelace storage
-mode). To add it: edit a dashboard → **Add card** → search **Daily Podcasts**
-(or add a manual card with `type: custom:daily-podcasts-card`). No separate
-install, no resource to add by hand.
+After updating and restarting Home Assistant, look for **Daily Podcasts** in the
+left sidebar with the podcast icon. If it is not visible immediately, refresh
+the browser once. No Lovelace dashboard card or manual dashboard resource is
+required.
 
-> If the card shows **"Custom element doesn't exist: daily-podcasts-card"**, first
-> redownload the integration so it has v1.7.1 or newer, restart Home Assistant,
-> then hard-refresh the browser (Cmd/Ctrl+Shift+R). The card no longer depends on
-> an external Lit/CDN import. If you use a YAML-mode dashboard, add this resource
-> manually before adding the card:
-> `url: /daily_podcasts/daily-podcasts-card.js`, `type: module`.
-> Under the hood the card uses two services you can also call yourself:
-> `daily_podcasts.list_podcasts` (returns the list) and
-> `daily_podcasts.set_podcasts` (replaces the whole ordered list).
+The sidebar uses the same backend services that are available for automations:
+`daily_podcasts.list_podcasts` and `daily_podcasts.set_podcasts`.
 
 ### The Configure menu (alternative)
 
-Prefer not to use a dashboard card? **Settings → Devices & services → Daily
-Podcast Queue → Configure** gives the same management via a step menu:
+Prefer not to use the sidebar? **Settings → Devices & services → Daily Podcast
+Queue → Configure** gives the same management via a step menu:
 
 - **Settings** — change the player, the time to prepare the daily playlist, the
   "prepare automatically each day" on/off switch, the **max catch-up look-back

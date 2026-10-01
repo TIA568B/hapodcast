@@ -14,18 +14,7 @@ try:
 except Exception:  # noqa: BLE001
     INTEGRATION_VERSION = "0.0.0"
 
-# Frontend (embedded Lovelace card) serving.
-URL_BASE = "/daily_podcasts"
-JSMODULES = [
-    {
-        "name": "Daily Podcasts Card",
-        "filename": "daily-podcasts-card.js",
-        "version": INTEGRATION_VERSION,
-    },
-]
-
-# WebSocket + management service names.
-WS_VERSION = f"{DOMAIN}/version"
+# Sidebar panel + management service names.
 SERVICE_LIST_PODCASTS = "list_podcasts"
 SERVICE_SET_PODCASTS = "set_podcasts"
 

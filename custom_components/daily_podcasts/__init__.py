@@ -32,10 +32,8 @@ from typing import Any
 
 import voluptuous as vol
 
-from homeassistant.components import websocket_api
 from homeassistant.config_entries import ConfigEntry, SOURCE_IMPORT
-from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
-from homeassistant.core import CoreState, HomeAssistant, ServiceCall, SupportsResponse
+from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.event import async_track_time_change
 from homeassistant.helpers.storage import Store
@@ -73,7 +71,6 @@ from .const import (
     DOMAIN,
     HWM_STORAGE_KEY,
     HWM_STORAGE_VERSION,
-    INTEGRATION_VERSION,
     LOG_PREFIX,
     MASS_DOMAIN,
     MASS_PLAY_MEDIA,
@@ -81,9 +78,8 @@ from .const import (
     SERVICE_LIST_PODCASTS,
     SERVICE_PLAY_HISTORY,
     SERVICE_SET_PODCASTS,
-    WS_VERSION,
 )
-from .frontend import JSModuleRegistration
+from .frontend import async_register_panel, async_remove_panel
 
 import logging
 
@@ -625,24 +621,12 @@ def _active_entry(hass: HomeAssistant) -> ConfigEntry | None:
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
-    """Register the frontend card, websocket, management services, YAML import.
-
-    This runs once for the integration (not per entry), which is where the
-    embedded Lovelace card must be registered.
-    """
+    """Register management services and perform the legacy YAML import."""
     hass.data.setdefault(DOMAIN, {})
 
-    # --- WebSocket: expose the integration version for the card ----------
-    @websocket_api.websocket_command({vol.Required("type"): WS_VERSION})
-    @websocket_api.async_response
-    async def _ws_version(hass, connection, msg):
-        connection.send_result(msg["id"], {"version": INTEGRATION_VERSION})
-
-    websocket_api.async_register_command(hass, _ws_version)
-
-    # --- Management services the card calls ------------------------------
+    # --- Management services used by the Daily Podcasts sidebar panel ----
     async def handle_list_podcasts(call: ServiceCall) -> dict[str, Any]:
-        """Return the current ordered podcast list (for the card to render)."""
+        """Return the current ordered podcast list for the sidebar panel."""
         cfg = _entry_config(hass)
         podcasts = []
         for p in cfg.get(CONF_PODCASTS) or []:
@@ -694,7 +678,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         # Updating options triggers the OptionsFlowWithReload reload path.
         hass.config_entries.async_update_entry(entry, options=new_options)
         _LOGGER.info(
-            "%s set_podcasts: saved %d podcast(s) from the card.",
+            "%s set_podcasts: saved %d podcast(s) from the sidebar panel.",
             LOG_PREFIX,
             len(cleaned),
         )
@@ -710,23 +694,6 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         hass.services.async_register(
             DOMAIN, SERVICE_SET_PODCASTS, handle_set_podcasts
         )
-
-    # --- Embedded Lovelace card: register once HA has started ------------
-    async def _register_frontend(_event=None) -> None:
-        try:
-            await JSModuleRegistration(hass).async_register()
-        except Exception as err:  # noqa: BLE001 - never block setup on the card
-            _LOGGER.warning(
-                "%s Could not register the Lovelace card (%s); the integration "
-                "still works, you can add the resource manually.",
-                LOG_PREFIX,
-                err,
-            )
-
-    if hass.state == CoreState.running:
-        await _register_frontend()
-    else:
-        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, _register_frontend)
 
     # --- One-time YAML import (legacy) -----------------------------------
     conf = config.get(DOMAIN)
@@ -749,6 +716,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up the integration from a config entry (the UI-managed path)."""
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN]["entry"] = entry
+
+    # The management UI is a dedicated sidebar panel, not a Lovelace card.
+    await async_register_panel(hass)
 
     # Per-podcast high-water marks (feed_url -> ISO publish time of the newest
     # episode already included), persisted across restarts via Store.
@@ -1243,4 +1213,5 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if cancel:
         cancel()
     store.pop("entry", None)
+    async_remove_panel(hass)
     return True

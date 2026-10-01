@@ -102,13 +102,13 @@ list_podcasts:
   name: List podcasts
   description: >
     Return the current ordered podcast list and configured player. Used by the
-    Daily Podcasts management card; returns a response (no side effects).
+    Daily Podcasts sidebar panel; returns a response (no side effects).
 
 set_podcasts:
   name: Set podcasts
   description: >
     Replace the entire ordered podcast list (add / remove / edit / reorder in
-    one call). Used by the Daily Podcasts management card. Entries without a
+    one call). Used by the Daily Podcasts sidebar panel. Entries without a
     name or a valid feed URL are skipped.
   fields:
     podcasts:
