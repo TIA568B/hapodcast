@@ -10,7 +10,7 @@ day's playlist so past days can be replayed later (catch-up after a holiday).
 Configuration (in configuration.yaml):
 
     daily_podcasts:
-      player: media_player.sonos_kitchen
+      player: media_player.office      # your Music Assistant / Sonos player
       podcasts:
         - name: The Daily
           feed_url: https://feeds.simplecast.com/54nAGcIl
@@ -394,39 +394,77 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data[DOMAIN]["entry"] = entry
 
     async def _async_queue_media(player: str, episodes: list[dict], dry_run: bool):
-        """Send the ordered episodes to Music Assistant in one call."""
+        """Queue the ordered episodes onto the player.
+
+        Prefers Music Assistant's ``mass.play_media`` when that service is
+        registered (it accepts the whole ordered list in one call). When Music
+        Assistant isn't available, falls back to the built-in
+        ``media_player.play_media`` service, which works with the native Sonos
+        integration: the first episode is sent with ``enqueue: replace`` (clears
+        the queue and starts playback) and the rest with ``enqueue: add``
+        (append in order). Either path is idempotent on re-run because the first
+        item always replaces the existing queue.
+        """
         media_ids = [ep["audio_url"] for ep in episodes]
+        use_mass = hass.services.has_service(MASS_DOMAIN, MASS_PLAY_MEDIA)
+        method = "mass.play_media" if use_mass else "media_player.play_media"
+
         for index, ep in enumerate(episodes, start=1):
             _LOGGER.info(
-                "%s QUEUE #%d -> %s: %r \"%s\" [%s]",
+                "%s QUEUE #%d -> %s via %s: %r \"%s\" [%s]",
                 LOG_PREFIX,
                 index,
                 player,
+                method,
                 ep["name"],
                 ep["title"],
                 ep["audio_url"],
             )
+
         if dry_run:
             _LOGGER.info(
-                "%s dry_run: would call %s.%s on %s with %d item(s), "
-                "enqueue=replace.",
+                "%s dry_run: would queue %d item(s) on %s via %s "
+                "(enqueue=replace, then add).",
                 LOG_PREFIX,
-                MASS_DOMAIN,
-                MASS_PLAY_MEDIA,
-                player,
                 len(media_ids),
+                player,
+                method,
             )
             return
-        await hass.services.async_call(
-            MASS_DOMAIN,
-            MASS_PLAY_MEDIA,
-            {
-                "entity_id": player,
-                "media_id": media_ids,
-                "enqueue": "replace",
-            },
-            blocking=True,
-        )
+
+        if use_mass:
+            # Music Assistant takes the whole ordered list in one call.
+            await hass.services.async_call(
+                MASS_DOMAIN,
+                MASS_PLAY_MEDIA,
+                {
+                    "entity_id": player,
+                    "media_id": media_ids,
+                    "enqueue": "replace",
+                },
+                blocking=True,
+            )
+            return
+
+        # Native fallback: media_player.play_media takes one item per call.
+        import asyncio
+
+        for index, media_id in enumerate(media_ids):
+            enqueue = "replace" if index == 0 else "add"
+            await hass.services.async_call(
+                "media_player",
+                "play_media",
+                {
+                    "entity_id": player,
+                    "media_content_id": media_id,
+                    "media_content_type": "music",
+                    "enqueue": enqueue,
+                },
+                blocking=True,
+            )
+            # Small gap so Sonos processes each enqueue in order.
+            if index == 0 and len(media_ids) > 1:
+                await asyncio.sleep(2)
 
     def _history_base_dir() -> str:
         cfg = _entry_config(hass)

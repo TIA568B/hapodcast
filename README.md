@@ -2,8 +2,12 @@
 
 A Home Assistant **custom integration** that, every morning, builds a "playlist"
 of the podcasts that published a new episode **today** and queues them on a Sonos
-speaker through Music Assistant — in your chosen listening order, silently
-skipping any podcast with nothing new.
+speaker — in your chosen listening order, silently skipping any podcast with
+nothing new.
+
+It queues through **Music Assistant** (`mass.play_media`) when that's available,
+and otherwise falls back to Home Assistant's built-in `media_player.play_media`,
+so it works with a plain Sonos speaker even if Music Assistant isn't set up.
 
 It also **records each day's playlist**, so you can replay past days later — play
 catch-up after a holiday, for example — even after those episodes have aged out
@@ -57,9 +61,13 @@ HA `config/custom_components/` directory and restart. Home Assistant installs th
    Assistant timezone**, preserving your list order and dropping the rest.
 4. It **records** that ordered playlist to a per-day file
    (`config/daily_podcasts_history/YYYY-MM-DD.json`).
-5. It sends the ordered list to Music Assistant in a single `mass.play_media`
-   call with `enqueue: replace`, which clears the old queue and plays the
-   episodes back-to-back.
+5. It queues the ordered list on your player, clearing the old queue first and
+   playing the episodes back-to-back:
+   - **With Music Assistant**: one `mass.play_media` call with the whole list,
+     `enqueue: replace`.
+   - **Without Music Assistant**: `media_player.play_media` per episode — the
+     first with `enqueue: replace`, the rest with `enqueue: add` (append in
+     order). Works with the native Sonos integration.
 
 Failures are isolated: a single unreachable or malformed feed is logged and the
 rest of the list still plays. If nothing published today, it logs that and
@@ -96,9 +104,12 @@ recorded playlists. That's runtime data, so it's git-ignored.
 
 ## Prerequisites
 
-- **Home Assistant** with the **Music Assistant** integration, your podcasts
-  added as RSS Feed providers, and your Sonos speakers showing as Music
-  Assistant player entities (e.g. `media_player.sonos_kitchen`).
+- **Home Assistant** with a Sonos (or other) `media_player` entity to queue onto.
+- **Music Assistant is optional.** If you have it set up (podcasts added as RSS
+  Feed providers, speakers showing as MA player entities), the integration uses
+  `mass.play_media`. If not, it falls back to the native
+  `media_player.play_media` on whatever `media_player` you select (e.g. the
+  Sonos integration's own entity).
 - **HACS** (for the one-click install). Not required for the manual install.
 - **feedparser** — installed automatically; it's declared in the integration's
   `manifest.json` and Home Assistant installs it on startup.
@@ -184,9 +195,11 @@ you're away with nothing for you to switch on. When you're back, replay them
 with `daily_podcasts.play_history`.
 
 Days play in **chronological order**, and within each day the original podcast
-order is preserved. The whole span is sent as one `mass.play_media` call with
-`enqueue: replace`, so it's a single continuous queue (and re-running it rebuilds
-the same queue rather than duplicating).
+order is preserved. The whole span is queued the same way as the daily run
+(`mass.play_media` if Music Assistant is available, otherwise
+`media_player.play_media` replace-then-add), clearing the previous queue first —
+so it's a single continuous queue, and re-running it rebuilds the same queue
+rather than duplicating.
 
 Call it from **Developer Tools → Actions** (pick **Daily Podcast Queue: Play
 recorded podcast history**) or in YAML. Pick episodes with one of these
@@ -252,7 +265,8 @@ a one-tap catch-up button, create an `input_datetime` helper (e.g.
 | Preserve order while skipping | Included items keep original list order; skipped/failed simply omitted |
 | Published-today only, local tz | Each episode's UTC pubDate is converted to `hass.config.time_zone` before comparing dates |
 | Fresh data | Feeds are fetched over HTTP with no-cache headers at trigger time |
-| Queue on Sonos in order | Single `mass.play_media` call, ordered `media_id` list, `enqueue: replace` |
+| Queue on Sonos in order | `mass.play_media` (one ordered list) when MA is present, else `media_player.play_media` replace-then-add; both clear the queue first |
+| Works without Music Assistant | Falls back to native `media_player.play_media` on the chosen player |
 | Feed failure isolation | Per-feed try/except logs the error and continues |
 | Nothing today | No episodes → no service call, speaker untouched, logged |
 | Idempotent reruns | `enqueue: replace` rebuilds the same queue, no duplicates |
@@ -280,9 +294,14 @@ a one-tap catch-up button, create an `input_datetime` helper (e.g.
 - **Episode not picked up**: some feeds date-stamp episodes so they land on a
   different local calendar day. Run `build_queue` with `dry_run: true` and read
   the `INCLUDE/SKIP` log lines — they show each episode's local publish date.
-- **A URL won't play**: `media_type` is intentionally omitted so Music Assistant
-  auto-detects from the enclosure URL. If a specific feed misbehaves, check that
-  its `<item>` has a proper `<enclosure>` audio URL.
+- **A URL won't play**: with the native fallback, episodes are sent as
+  `media_content_type: music`; with Music Assistant, type is auto-detected. If a
+  specific feed misbehaves, check that its `<item>` has a proper `<enclosure>`
+  audio URL.
+- **Which player to pick**: if Music Assistant is set up, choose its MA player
+  entity for the speaker. If not, choose the speaker's native entity (e.g. the
+  Sonos integration's `media_player.*`). The log line `QUEUE #n -> <player> via
+  <method>` shows which service was used.
 - **Catch-up plays nothing**: check that files exist in
   `config/daily_podcasts_history/` (there's no file for days nothing published,
   and none written before this was installed). Run with `dry_run: true` to see
