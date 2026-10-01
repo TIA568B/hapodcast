@@ -193,11 +193,12 @@ mode). To add it: edit a dashboard → **Add card** → search **Daily Podcasts*
 (or add a manual card with `type: custom:daily-podcasts-card`). No separate
 install, no resource to add by hand.
 
-> If the card doesn't appear in the picker right after installing, hard-refresh
-> the browser (Cmd/Ctrl+Shift+R) so the new resource loads. In **YAML-mode**
-> dashboards, add the resource manually:
+> If the card shows **"Custom element doesn't exist: daily-podcasts-card"**, first
+> redownload the integration so it has v1.7.1 or newer, restart Home Assistant,
+> then hard-refresh the browser (Cmd/Ctrl+Shift+R). The card no longer depends on
+> an external Lit/CDN import. If you use a YAML-mode dashboard, add this resource
+> manually before adding the card:
 > `url: /daily_podcasts/daily-podcasts-card.js`, `type: module`.
->
 > Under the hood the card uses two services you can also call yourself:
 > `daily_podcasts.list_podcasts` (returns the list) and
 > `daily_podcasts.set_podcasts` (replaces the whole ordered list).

@@ -30,8 +30,21 @@ class JSModuleRegistration:
 
     async def async_register(self) -> None:
         await self._async_register_path()
+        self.lovelace = self.hass.data.get("lovelace")
         if self.lovelace and getattr(self.lovelace, "mode", None) == "storage":
             await self._async_wait_for_lovelace_resources()
+        elif not self.lovelace:
+            # Lovelace may not have been inserted into hass.data at the exact
+            # moment the integration receives the started event. Retry rather
+            # than silently leaving the resource unregistered.
+            async_call_later(self.hass, 5, self._async_retry_lovelace)
+
+    async def _async_retry_lovelace(self, _now: Any) -> None:
+        self.lovelace = self.hass.data.get("lovelace")
+        if self.lovelace and getattr(self.lovelace, "mode", None) == "storage":
+            await self._async_wait_for_lovelace_resources()
+        elif not self.lovelace:
+            async_call_later(self.hass, 5, self._async_retry_lovelace)
 
     async def _async_register_path(self) -> None:
         try:
