@@ -370,11 +370,15 @@ ready-to-adapt example.
   **catch-up** button (`daily_podcasts.play_history`) — only days the integration
   has already recorded are available there.
 - **A single podcast keeps re-queuing or never catches up**: catch-up relies on
-  stable feed GUIDs and publish dates. If a feed rewrites GUIDs or omits dates,
-  the mark can't track it cleanly — turn that podcast's **catch-up off** (today
-  only) via Configure → Edit a podcast. The high-water marks live in
-  `.storage/daily_podcasts_hwm`; deleting that file resets catch-up (next run =
-  today only again).
+  stable feed publish dates (and GUIDs for de-dupe). The per-podcast high-water
+  mark advances to the newest episode seen in the catch-up window on every
+  recorded run — including episodes de-duped away — so an already-offered
+  episode is not resurfaced even if it rotates out of recent history. If a feed
+  rewrites publish dates or GUIDs so the mark can't track it, turn that
+  podcast's **catch-up off** (today only) via Configure → Edit a podcast. The
+  marks live in `.storage/daily_podcasts_hwm`; deleting that file resets
+  catch-up, and the next run backfills marks from recorded history (so it won't
+  re-offer episodes already in `daily_podcasts_history/`).
 - **`feedparser` errors on startup**: HA installs it from the manifest; watch
   the startup logs. A restart usually resolves a transient install.
 - **Timezone looks wrong**: this uses `hass.config.time_zone`. Set the

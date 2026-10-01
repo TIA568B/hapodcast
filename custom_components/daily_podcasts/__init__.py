@@ -286,7 +286,37 @@ def _fetch_and_parse(feed_url: str, timeout: int) -> list[dict[str, Any]]:
 
 
 def _write_history_file(path: str, payload: dict[str, Any]) -> None:
+    """Write a day's history, merging with any existing file for that day.
+
+    A day's file is the log of everything served that day. We MERGE (union by
+    guid, preserving order and appending new items) rather than overwrite, so a
+    second run on the same day never drops episodes an earlier run recorded.
+    This keeps `play_history date:<day>` complete and keeps the de-dupe set
+    stable.
+    """
     os.makedirs(os.path.dirname(path), exist_ok=True)
+
+    existing: list[dict] = []
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                existing = (json.load(fh) or {}).get("episodes", []) or []
+        except Exception:  # noqa: BLE001 - treat unreadable as empty
+            existing = []
+
+    def _key(ep):
+        return ep.get("guid") or ep.get("audio_url")
+
+    merged = list(existing)
+    seen = {_key(ep) for ep in existing}
+    for ep in payload.get("episodes", []) or []:
+        if _key(ep) not in seen:
+            merged.append(ep)
+            seen.add(_key(ep))
+
+    payload = dict(payload)
+    payload["episodes"] = merged
+
     tmp = f"{path}.tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(payload, fh, ensure_ascii=False, indent=2)
@@ -330,6 +360,34 @@ def _recent_guids(base_dir: str, days: int) -> set[str]:
             if g:
                 guids.add(str(g))
     return guids
+
+
+def _history_latest_by_name(base_dir: str, days: int) -> dict[str, str]:
+    """Newest recorded `published_local` ISO per podcast name, from history.
+
+    Used to backfill high-water marks after upgrading from a version that
+    recorded history but didn't track HWMs, so already-recorded episodes aren't
+    re-offered. Keyed by podcast name (history doesn't store feed_url); the
+    caller maps names to feed URLs. Blocking (executor).
+    """
+    latest: dict[str, str] = {}
+    recent = _list_history_dates(base_dir)[-max(1, days):]
+    for date_str in recent:
+        path = os.path.join(base_dir, f"{date_str}.json")
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                payload = json.load(fh)
+        except Exception:  # noqa: BLE001
+            continue
+        for ep in (payload or {}).get("episodes", []) or []:
+            name = ep.get("name")
+            pub = ep.get("published_local")
+            if not name or not pub:
+                continue
+            prev = latest.get(name)
+            if prev is None or pub > prev:
+                latest[name] = pub
+    return latest
 
 
 # ---------------------------------------------------------------------------
@@ -417,32 +475,43 @@ def _build_episode_list(
             )
             continue
 
+        feed_hwm = _parse_iso(hwm.get(feed_url)) if catchup else None
         if catchup:
             # Window lower bound: after the HWM, but no earlier than the
             # lookback floor; first run (no HWM) starts at today's local start.
-            feed_hwm = _parse_iso(hwm.get(feed_url))
             if feed_hwm is None:
                 lower = today_start_utc
             else:
                 lower = max(feed_hwm, lookback_floor)
             window_desc = f"after {lower.isoformat()}"
 
-            def _in_window(pub, _lower=lower):
-                # Strictly after the HWM lower bound (first run uses >= today
-                # start so today's early episodes are included).
-                return pub > _lower if feed_hwm is not None else pub >= _lower
+            # Bind feed_hwm/lower as defaults so the closure captures *this*
+            # feed's values, not the loop variable (late-binding gotcha).
+            def _in_window(pub, _lower=lower, _first=feed_hwm is None):
+                # First run (no HWM) is inclusive of today's start; otherwise
+                # strictly after the HWM so an already-marked episode isn't
+                # re-offered.
+                return pub >= _lower if _first else pub > _lower
         else:
             # Catch-up off: just today's local date.
             window_desc = f"today ({today_local})"
 
-            def _in_window(pub):
-                return pub.astimezone(local_tz).date() == today_local
+            def _in_window(pub, _tz=local_tz, _today=today_local):
+                return pub.astimezone(_tz).date() == _today
 
+        # Episodes in the window, split into new (to queue) vs already-seen
+        # (de-duped). We track the newest IN-WINDOW publish time regardless of
+        # de-dupe so the HWM always advances past episodes we've already
+        # accounted for -- otherwise a de-duped episode would be re-offered the
+        # moment it falls out of the recent-history de-dupe set.
         matched = []
+        newest_in_window = None  # aware UTC datetime
         for ep in feed_episodes:
             pub = ep["published_dt"]
             if not _in_window(pub):
                 continue
+            if newest_in_window is None or pub > newest_in_window:
+                newest_in_window = pub
             if ep["guid"] in seen_guids:
                 _LOGGER.debug(
                     "%s de-dupe %r: already seen guid %s",
@@ -452,6 +521,13 @@ def _build_episode_list(
                 )
                 continue
             matched.append(ep)
+
+        # Advance this feed's HWM to the newest in-window episode we saw (new or
+        # de-duped). Catch-up-off feeds don't use the HWM, so leave theirs alone.
+        if catchup and newest_in_window is not None:
+            new_hwm[feed_url] = newest_in_window.astimezone(
+                dt.timezone.utc
+            ).isoformat()
 
         if not matched:
             skipped.append({"name": name})
@@ -482,12 +558,6 @@ def _build_episode_list(
             _LOGGER.info(
                 "%s   (%d episodes from %r)", LOG_PREFIX, len(matched), name
             )
-
-        # New HWM for this feed = newest included publish time (episodes are
-        # oldest-first, so the last match is newest).
-        new_hwm[feed_url] = matched[-1]["published_dt"].astimezone(
-            dt.timezone.utc
-        ).isoformat()
 
     return included, skipped, errors, new_hwm
 
@@ -565,10 +635,44 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # episode already included), persisted across restarts via Store.
     hwm_store: Store = Store(hass, HWM_STORAGE_VERSION, HWM_STORAGE_KEY)
     hass.data[DOMAIN]["hwm_store"] = hwm_store
-    hass.data[DOMAIN]["hwm"] = (await hwm_store.async_load()) or {}
+    hwm: dict[str, str] = (await hwm_store.async_load()) or {}
+    hass.data[DOMAIN]["hwm"] = hwm
 
     async def _async_save_hwm() -> None:
         await hwm_store.async_save(hass.data[DOMAIN].get("hwm", {}))
+
+    # One-time backfill: for feeds with no HWM yet, seed it from the newest
+    # episode already recorded in history, so upgrading from a version that
+    # recorded history but didn't track HWMs doesn't re-offer those episodes.
+    cfg0 = _entry_config(hass)
+    podcasts0 = cfg0.get(CONF_PODCASTS) or []
+    missing = [
+        p for p in podcasts0
+        if p.get(CONF_FEED_URL) and p.get(CONF_FEED_URL) not in hwm
+    ]
+    if missing:
+        base_dir0 = cfg0.get(CONF_HISTORY_DIR, DEFAULT_HISTORY_DIR)
+        if not os.path.isabs(base_dir0):
+            base_dir0 = hass.config.path(base_dir0)
+        lookback0 = int(cfg0.get(CONF_MAX_LOOKBACK_DAYS, DEFAULT_MAX_LOOKBACK_DAYS))
+        latest_by_name = await hass.async_add_executor_job(
+            _history_latest_by_name, base_dir0, lookback0
+        )
+        changed = False
+        for p in missing:
+            iso = latest_by_name.get(p.get(CONF_NAME))
+            if iso:
+                hwm[p[CONF_FEED_URL]] = iso
+                changed = True
+                _LOGGER.info(
+                    "%s Backfilled HWM for %r from history: %s",
+                    LOG_PREFIX,
+                    p.get(CONF_NAME),
+                    iso,
+                )
+        if changed:
+            hass.data[DOMAIN]["hwm"] = hwm
+            await _async_save_hwm()
 
     async def _async_queue_media(player: str, episodes: list[dict], dry_run: bool):
         """Queue the ordered episodes onto the player.
@@ -767,14 +871,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         today_str = dt.datetime.now(local_tz).strftime(DATE_FMT)
 
-        if included and not dry_run:
-            await _async_save_history(today_str, player, included)
-            # Advance per-podcast HWM only for feeds that produced episodes and
-            # were recorded. Feeds that errored/matched nothing are absent from
-            # new_hwm, so their HWM is left intact (retried next run).
-            hwm.update(new_hwm)
-            hass.data[DOMAIN]["hwm"] = hwm
-            await _async_save_hwm()
+        if not dry_run:
+            # Record only the episodes we're actually offering (merged into the
+            # day's history).
+            if included:
+                await _async_save_history(today_str, player, included)
+            # Advance each feed's HWM to the newest in-window episode it saw --
+            # including episodes de-duped away -- so nothing already accounted
+            # for is ever re-offered, even if history later rotates out. Feeds
+            # that errored are absent from new_hwm (HWM kept -> retried).
+            if new_hwm:
+                hwm.update(new_hwm)
+                hass.data[DOMAIN]["hwm"] = hwm
+                await _async_save_hwm()
 
         if not included:
             _LOGGER.info(
