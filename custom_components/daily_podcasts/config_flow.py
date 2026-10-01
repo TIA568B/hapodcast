@@ -35,10 +35,14 @@ from .const import (
     CONF_PLAYER,
     CONF_PODCASTS,
     CONF_TIMEZONE,
+    CONF_WEEKEND_CATCHUP,
     DEFAULT_AT,
     DEFAULT_ENABLED,
+    DEFAULT_WEEKEND_CATCHUP,
     DOMAIN,
     STEP_ADD,
+    STEP_EDIT,
+    STEP_EDIT_PICK,
     STEP_MOVE_DOWN,
     STEP_MOVE_UP,
     STEP_REMOVE,
@@ -103,7 +107,13 @@ class DailyPodcastsConfigFlow(ConfigFlow, domain=DOMAIN):
             return self.async_abort(reason="single_instance_allowed")
 
         podcasts = [
-            {CONF_NAME: p.get(CONF_NAME), CONF_FEED_URL: p.get(CONF_FEED_URL)}
+            {
+                CONF_NAME: p.get(CONF_NAME),
+                CONF_FEED_URL: p.get(CONF_FEED_URL),
+                CONF_WEEKEND_CATCHUP: bool(
+                    p.get(CONF_WEEKEND_CATCHUP, DEFAULT_WEEKEND_CATCHUP)
+                ),
+            }
             for p in (import_data.get(CONF_PODCASTS) or [])
             if p.get(CONF_FEED_URL)
         ]
@@ -136,7 +146,7 @@ class DailyPodcastsOptionsFlow(OptionsFlowWithReload):
         count = len(podcasts)
         menu = [STEP_SETTINGS, STEP_ADD]
         if count:
-            menu.append(STEP_REMOVE)
+            menu += [STEP_EDIT, STEP_REMOVE]
         if count > 1:
             menu += [STEP_MOVE_UP, STEP_MOVE_DOWN]
         return self.async_show_menu(step_id="init", menu_options=menu)
@@ -192,7 +202,15 @@ class DailyPodcastsOptionsFlow(OptionsFlowWithReload):
             if not errors:
                 opts = dict(self.config_entry.options)
                 podcasts = list(opts.get(CONF_PODCASTS, []))
-                podcasts.append({CONF_NAME: name, CONF_FEED_URL: url})
+                podcasts.append(
+                    {
+                        CONF_NAME: name,
+                        CONF_FEED_URL: url,
+                        CONF_WEEKEND_CATCHUP: user_input.get(
+                            CONF_WEEKEND_CATCHUP, DEFAULT_WEEKEND_CATCHUP
+                        ),
+                    }
+                )
                 opts[CONF_PODCASTS] = podcasts
                 return self._save(opts)
 
@@ -204,10 +222,82 @@ class DailyPodcastsOptionsFlow(OptionsFlowWithReload):
                 vol.Required(CONF_FEED_URL): TextSelector(
                     TextSelectorConfig(type=TextSelectorType.URL)
                 ),
+                vol.Optional(
+                    CONF_WEEKEND_CATCHUP, default=DEFAULT_WEEKEND_CATCHUP
+                ): BooleanSelector(),
             }
         )
         return self.async_show_form(
             step_id=STEP_ADD, data_schema=schema, errors=errors
+        )
+
+    # --- Edit a podcast --------------------------------------------------
+    async def async_step_edit_podcast(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """First pick which podcast to edit."""
+        podcasts = list(self.config_entry.options.get(CONF_PODCASTS, []))
+        if user_input is not None:
+            self._edit_index = int(user_input["podcast"])
+            return await self.async_step_edit_pick()
+        return self.async_show_form(
+            step_id=STEP_EDIT,
+            data_schema=vol.Schema(
+                {vol.Required("podcast"): self._podcast_selector(podcasts)}
+            ),
+        )
+
+    async def async_step_edit_pick(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Then edit the chosen podcast's name / URL / weekend catch-up."""
+        podcasts = list(self.config_entry.options.get(CONF_PODCASTS, []))
+        idx = getattr(self, "_edit_index", -1)
+        if not (0 <= idx < len(podcasts)):
+            # Nothing valid selected; go back to the menu.
+            return await self.async_step_init()
+        current = podcasts[idx]
+
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            name = user_input[CONF_NAME].strip()
+            url = user_input[CONF_FEED_URL].strip()
+            try:
+                cv.url(url)
+            except vol.Invalid:
+                errors[CONF_FEED_URL] = "invalid_url"
+            if not name:
+                errors[CONF_NAME] = "name_required"
+            if not errors:
+                podcasts[idx] = {
+                    CONF_NAME: name,
+                    CONF_FEED_URL: url,
+                    CONF_WEEKEND_CATCHUP: user_input.get(
+                        CONF_WEEKEND_CATCHUP, DEFAULT_WEEKEND_CATCHUP
+                    ),
+                }
+                opts = dict(self.config_entry.options)
+                opts[CONF_PODCASTS] = podcasts
+                return self._save(opts)
+
+        schema = vol.Schema(
+            {
+                vol.Required(
+                    CONF_NAME, default=current.get(CONF_NAME, "")
+                ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
+                vol.Required(
+                    CONF_FEED_URL, default=current.get(CONF_FEED_URL, "")
+                ): TextSelector(TextSelectorConfig(type=TextSelectorType.URL)),
+                vol.Optional(
+                    CONF_WEEKEND_CATCHUP,
+                    default=bool(
+                        current.get(CONF_WEEKEND_CATCHUP, DEFAULT_WEEKEND_CATCHUP)
+                    ),
+                ): BooleanSelector(),
+            }
+        )
+        return self.async_show_form(
+            step_id=STEP_EDIT_PICK, data_schema=schema, errors=errors
         )
 
     # --- Remove a podcast ------------------------------------------------

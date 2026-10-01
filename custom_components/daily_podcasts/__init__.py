@@ -57,11 +57,13 @@ from .const import (
     CONF_PLAYER,
     CONF_PODCASTS,
     CONF_TIMEZONE,
+    CONF_WEEKEND_CATCHUP,
     DATE_FMT,
     DEFAULT_AT,
     DEFAULT_ENABLED,
     DEFAULT_FETCH_TIMEOUT,
     DEFAULT_HISTORY_DIR,
+    DEFAULT_WEEKEND_CATCHUP,
     DOMAIN,
     LOG_PREFIX,
     MASS_DOMAIN,
@@ -83,6 +85,9 @@ PODCAST_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_NAME): cv.string,
         vol.Required(CONF_FEED_URL): cv.url,
+        vol.Optional(
+            CONF_WEEKEND_CATCHUP, default=DEFAULT_WEEKEND_CATCHUP
+        ): cv.boolean,
     }
 )
 
@@ -289,15 +294,16 @@ def _list_history_dates(base_dir: str) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def _eligible_dates(today: dt.date) -> set[dt.date]:
-    """Dates that count as "today" for inclusion.
+def _eligible_dates(today: dt.date, weekend_catchup: bool = True) -> set[dt.date]:
+    """Dates that count as "today" for inclusion, for one podcast.
 
-    Normally just `today`. On a Monday (weekday() == 0) the window also includes
-    the preceding Saturday and Sunday, so Monday's run picks up everything that
-    published over the weekend.
+    Normally just `today`. On a Monday (weekday() == 0), if that podcast has
+    weekend catch-up enabled, the window also includes the preceding Saturday
+    and Sunday, so Monday's run picks up everything that published over the
+    weekend. Podcasts with weekend catch-up off always use just `today`.
     """
     dates = {today}
-    if today.weekday() == 0:  # Monday
+    if weekend_catchup and today.weekday() == 0:  # Monday
         dates.add(today - dt.timedelta(days=1))  # Sunday
         dates.add(today - dt.timedelta(days=2))  # Saturday
     return dates
@@ -308,18 +314,14 @@ def _build_episode_list(
 ) -> tuple[list[dict], list[dict], list[dict]]:
     """Return eligible episodes per feed, in listening order.
 
-    "Eligible" normally means published *today* (local tz). On a **Monday** the
-    window is widened to include the preceding Saturday and Sunday, so you catch
-    up on anything that published over the weekend. ALL eligible episodes from a
-    feed are included (not just the newest), ordered oldest-first within the
-    feed; feeds keep their configured list order.
+    "Eligible" normally means published *today* (local tz). On a **Monday**, any
+    podcast with weekend catch-up enabled (per-podcast, default on) also
+    includes the preceding Saturday and Sunday, so you catch up on anything that
+    published over the weekend. ALL eligible episodes from a feed are included
+    (not just the newest), ordered oldest-first within the feed; feeds keep
+    their configured list order.
     """
-    eligible_dates = _eligible_dates(dt.datetime.now(local_tz).date())
-    window_desc = (
-        str(min(eligible_dates))
-        if len(eligible_dates) == 1
-        else f"{min(eligible_dates)}..{max(eligible_dates)}"
-    )
+    today = dt.datetime.now(local_tz).date()
 
     included: list[dict] = []
     skipped: list[dict] = []
@@ -332,6 +334,17 @@ def _build_episode_list(
             errors.append({"name": name, "error": "missing feed_url"})
             _LOGGER.error("%s '%s': missing feed_url; skipping.", LOG_PREFIX, name)
             continue
+
+        # Per-podcast eligible window (default: weekend catch-up on).
+        weekend_catchup = bool(
+            (entry or {}).get(CONF_WEEKEND_CATCHUP, DEFAULT_WEEKEND_CATCHUP)
+        )
+        eligible = _eligible_dates(today, weekend_catchup)
+        window_desc = (
+            str(min(eligible))
+            if len(eligible) == 1
+            else f"{min(eligible)}..{max(eligible)}"
+        )
 
         try:
             feed_episodes = _fetch_and_parse(feed_url, fetch_timeout)
@@ -350,7 +363,7 @@ def _build_episode_list(
         matched = []
         for ep in feed_episodes:
             published_local_dt = ep["published_dt"].astimezone(local_tz)
-            if published_local_dt.date() in eligible_dates:
+            if published_local_dt.date() in eligible:
                 matched.append((ep, published_local_dt))
 
         if not matched:

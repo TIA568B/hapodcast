@@ -72,7 +72,9 @@ HA `config/custom_components/` directory and restart. Home Assistant installs th
 
    **Eligible window:** normally just **today**. On a **Monday** the window also
    includes the preceding **Saturday and Sunday**, so Monday picks up anything
-   that published over the weekend.
+   that published over the weekend. This weekend catch-up is **per-podcast**
+   (default on) — turn it off for any podcast via Configure → Edit a podcast if
+   you don't want its weekend episodes bundled into Monday.
 4. It **records** that ordered playlist to a per-day file
    (`config/daily_podcasts_history/YYYY-MM-DD.json`).
 
@@ -170,8 +172,11 @@ a small menu:
 - **Settings** — change the player, the time to prepare the daily playlist, the
   "prepare automatically each day" on/off switch, and an optional timezone
   override.
-- **Add a podcast** — enter a name and RSS feed URL. It's added to the end of
+- **Add a podcast** — enter a name and RSS feed URL, and whether Monday should
+  include this podcast's weekend episodes (default on). It's added to the end of
   the list; the URL is validated.
+- **Edit a podcast** — change a podcast's name, feed URL, or its Monday
+  weekend-catch-up setting.
 - **Remove a podcast** — pick one from the list to delete.
 - **Move a podcast earlier / later** — reorder the list; playback order follows
   it.
@@ -313,6 +318,7 @@ ready-to-adapt example.
 | All of a day's episodes | Every episode in the eligible window is included per feed (not just the newest), oldest-first within the feed |
 | Published-today only, local tz | Each episode's UTC pubDate is converted to `hass.config.time_zone` before comparing dates |
 | Monday catches up the weekend | On Mondays the eligible window is Sat + Sun + Mon; other days are just that day |
+| Per-podcast weekend catch-up | Each podcast has its own weekend-catch-up flag (default on), set from Add/Edit a podcast |
 | Fresh data | Feeds are fetched over HTTP with no-cache headers at trigger time |
 | Queue on Sonos in order | `mass.play_media` (one ordered list) when MA is present; else clear queue + first `enqueue: play` + rest `enqueue: add` so a real Sonos queue is built and advances |
 | Works without Music Assistant | Falls back to native `media_player` services on the chosen player |

@@ -21,8 +21,9 @@
         "title": "Daily Podcast Queue",
         "description": "Manage your podcasts and settings.",
         "menu_options": {
-          "settings": "Settings (player, time, record-only)",
+          "settings": "Settings (player, time)",
           "add_podcast": "Add a podcast",
+          "edit_podcast": "Edit a podcast",
           "remove_podcast": "Remove a podcast",
           "move_up": "Move a podcast earlier",
           "move_down": "Move a podcast later"
@@ -42,7 +43,22 @@
         "description": "Add it at the end of your list. Reorder afterwards from the menu.",
         "data": {
           "name": "Name",
-          "feed_url": "RSS feed URL"
+          "feed_url": "RSS feed URL",
+          "weekend_catchup": "On Mondays, also include this podcast's weekend episodes"
+        }
+      },
+      "edit_podcast": {
+        "title": "Edit a podcast",
+        "data": {
+          "podcast": "Podcast to edit"
+        }
+      },
+      "edit_pick": {
+        "title": "Edit podcast",
+        "data": {
+          "name": "Name",
+          "feed_url": "RSS feed URL",
+          "weekend_catchup": "On Mondays, also include this podcast's weekend episodes"
         }
       },
       "remove_podcast": {
@@ -71,8 +87,8 @@
   },
   "services": {
     "build_queue": {
-      "name": "Build today's podcast queue",
-      "description": "Fetch each feed, keep episodes published today, record the playlist, and queue it on the player."
+      "name": "Build and play today's podcast queue",
+      "description": "Fetch each feed, keep today's episodes (weekends too on Mondays, per podcast), record the playlist, and play it on the player (unless play is off)."
     },
     "play_history": {
       "name": "Play recorded podcast history",
