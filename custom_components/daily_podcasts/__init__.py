@@ -36,6 +36,7 @@ from homeassistant.config_entries import ConfigEntry, SOURCE_IMPORT
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.event import async_track_time_change
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers.typing import ConfigType
 
 from .const import (
@@ -54,17 +55,22 @@ from .const import (
     CONF_FETCH_TIMEOUT,
     CONF_HISTORY_DIR,
     CONF_NAME,
+    CONF_CATCHUP,
+    CONF_MAX_LOOKBACK_DAYS,
     CONF_PLAYER,
     CONF_PODCASTS,
     CONF_TIMEZONE,
     CONF_WEEKEND_CATCHUP,
     DATE_FMT,
     DEFAULT_AT,
+    DEFAULT_CATCHUP,
     DEFAULT_ENABLED,
     DEFAULT_FETCH_TIMEOUT,
     DEFAULT_HISTORY_DIR,
-    DEFAULT_WEEKEND_CATCHUP,
+    DEFAULT_MAX_LOOKBACK_DAYS,
     DOMAIN,
+    HWM_STORAGE_KEY,
+    HWM_STORAGE_VERSION,
     LOG_PREFIX,
     MASS_DOMAIN,
     MASS_PLAY_MEDIA,
@@ -85,9 +91,10 @@ PODCAST_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_NAME): cv.string,
         vol.Required(CONF_FEED_URL): cv.url,
-        vol.Optional(
-            CONF_WEEKEND_CATCHUP, default=DEFAULT_WEEKEND_CATCHUP
-        ): cv.boolean,
+        # Accept both the new key and the legacy weekend_catchup (migrated on
+        # read in _normalise_podcasts).
+        vol.Optional(CONF_CATCHUP): cv.boolean,
+        vol.Optional(CONF_WEEKEND_CATCHUP): cv.boolean,
     }
 )
 
@@ -106,6 +113,9 @@ CONFIG_SCHEMA = vol.Schema(
                 vol.Optional(
                     CONF_HISTORY_DIR, default=DEFAULT_HISTORY_DIR
                 ): cv.string,
+                vol.Optional(
+                    CONF_MAX_LOOKBACK_DAYS, default=DEFAULT_MAX_LOOKBACK_DAYS
+                ): cv.positive_int,
             }
         )
     },
@@ -210,13 +220,23 @@ def _extract_audio_url(entry) -> str | None:
     return None
 
 
+def _entry_guid(entry, audio_url: str) -> str:
+    """A stable per-episode identity for de-duplication across runs.
+
+    Prefers the RSS <guid> (feedparser exposes it as entry.id/guid); falls back
+    to the audio enclosure URL, which is stable enough in practice.
+    """
+    guid = entry.get("id") or entry.get("guid")
+    return str(guid) if guid else audio_url
+
+
 def _parse_feed_episodes(raw_bytes: bytes) -> list[dict[str, Any]]:
     """Parse ALL usable episodes from a feed, each with its publish date.
 
-    Returns a list of {title, audio_url, published_dt (aware UTC)} for every
-    entry that has both a parseable publish date and an audio enclosure, sorted
-    oldest-first. Raises ValueError only if the feed itself is unusable (so a
-    single entry missing an enclosure doesn't sink the whole feed).
+    Returns a list of {guid, title, audio_url, published_dt (aware UTC)} for
+    every entry that has both a parseable publish date and an audio enclosure,
+    sorted oldest-first. Raises ValueError only if the feed itself is unusable
+    (so a single entry missing an enclosure doesn't sink the whole feed).
     """
     import feedparser
 
@@ -239,6 +259,7 @@ def _parse_feed_episodes(raw_bytes: bytes) -> list[dict[str, Any]]:
             continue
         episodes.append(
             {
+                "guid": _entry_guid(entry, audio_url),
                 "title": entry.get("title", "(untitled episode)"),
                 "audio_url": audio_url,
                 "published_dt": published_dt,
@@ -289,43 +310,90 @@ def _list_history_dates(base_dir: str) -> list[str]:
     return sorted(dates)
 
 
+def _recent_guids(base_dir: str, days: int) -> set[str]:
+    """Collect episode GUIDs from the most recent `days` history files.
+
+    Used to de-duplicate: an episode already recorded in a recent run is never
+    offered again, even if its feed timestamp is fuzzy. Blocking (executor).
+    """
+    guids: set[str] = set()
+    recent = _list_history_dates(base_dir)[-max(1, days):]
+    for date_str in recent:
+        path = os.path.join(base_dir, f"{date_str}.json")
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                payload = json.load(fh)
+        except Exception:  # noqa: BLE001 - ignore unreadable history
+            continue
+        for ep in (payload or {}).get("episodes", []) or []:
+            g = ep.get("guid") or ep.get("audio_url")
+            if g:
+                guids.add(str(g))
+    return guids
+
+
 # ---------------------------------------------------------------------------
 # Core pipeline (pure; safe to call from executor)
 # ---------------------------------------------------------------------------
 
 
-def _eligible_dates(today: dt.date, weekend_catchup: bool = True) -> set[dt.date]:
-    """Dates that count as "today" for inclusion, for one podcast.
-
-    Normally just `today`. On a Monday (weekday() == 0), if that podcast has
-    weekend catch-up enabled, the window also includes the preceding Saturday
-    and Sunday, so Monday's run picks up everything that published over the
-    weekend. Podcasts with weekend catch-up off always use just `today`.
-    """
-    dates = {today}
-    if weekend_catchup and today.weekday() == 0:  # Monday
-        dates.add(today - dt.timedelta(days=1))  # Sunday
-        dates.add(today - dt.timedelta(days=2))  # Saturday
-    return dates
+def _parse_iso(value) -> dt.datetime | None:
+    """Parse an ISO timestamp into an aware UTC datetime, or None."""
+    if not value:
+        return None
+    try:
+        parsed = dt.datetime.fromisoformat(str(value))
+    except (ValueError, TypeError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=dt.timezone.utc)
+    return parsed.astimezone(dt.timezone.utc)
 
 
 def _build_episode_list(
-    podcasts: list[dict[str, Any]], local_tz, fetch_timeout: int
-) -> tuple[list[dict], list[dict], list[dict]]:
+    podcasts: list[dict[str, Any]],
+    local_tz,
+    fetch_timeout: int,
+    hwm: dict[str, str],
+    seen_guids: set[str],
+    max_lookback_days: int,
+) -> tuple[list[dict], list[dict], list[dict], dict[str, str]]:
     """Return eligible episodes per feed, in listening order.
 
-    "Eligible" normally means published *today* (local tz). On a **Monday**, any
-    podcast with weekend catch-up enabled (per-podcast, default on) also
-    includes the preceding Saturday and Sunday, so you catch up on anything that
-    published over the weekend. ALL eligible episodes from a feed are included
-    (not just the newest), ordered oldest-first within the feed; feeds keep
-    their configured list order.
+    Catch-up model (per podcast, default on): include every episode published
+    *after that podcast's high-water mark* (``hwm[feed_url]`` — the publish time
+    of the newest episode previously included), through now. This picks up
+    whatever was missed since the last successful prepare, no matter how many
+    days elapsed, with no weekday special-casing.
+
+    - First run (no HWM for a feed): the window starts at the beginning of today
+      (local), so a fresh install only offers today's episodes, not back-catalogue.
+    - A ``max_lookback_days`` floor caps how far back the window can reach, so an
+      ancient HWM (long outage) can't dump a huge backlog.
+    - Catch-up OFF for a podcast: window is just *today* (local date), ignoring
+      the HWM for selection.
+    - GUID de-duplication: episodes whose guid is already in ``seen_guids``
+      (recent history) are never re-included, even if timestamps are fuzzy.
+    - ALL eligible episodes are included (oldest-first within a feed); feeds keep
+      configured list order.
+
+    Returns (included, skipped, errors, new_hwm). ``new_hwm`` maps feed_url ->
+    ISO publish time of the newest included episode for feeds that had matches;
+    the caller advances the stored HWM from it *only* on a successful prepare.
+    Feeds that errored or matched nothing are absent from new_hwm (HWM unchanged
+    -> retried next run).
     """
-    today = dt.datetime.now(local_tz).date()
+    now_utc = dt.datetime.now(dt.timezone.utc)
+    today_local = dt.datetime.now(local_tz).date()
+    today_start_utc = dt.datetime.combine(
+        today_local, dt.time(0, 0), local_tz
+    ).astimezone(dt.timezone.utc)
+    lookback_floor = now_utc - dt.timedelta(days=max(1, int(max_lookback_days)))
 
     included: list[dict] = []
     skipped: list[dict] = []
     errors: list[dict] = []
+    new_hwm: dict[str, str] = {}
 
     for entry in podcasts:
         name = (entry or {}).get(CONF_NAME, "(unnamed)")
@@ -335,51 +403,69 @@ def _build_episode_list(
             _LOGGER.error("%s '%s': missing feed_url; skipping.", LOG_PREFIX, name)
             continue
 
-        # Per-podcast eligible window (default: weekend catch-up on).
-        weekend_catchup = bool(
-            (entry or {}).get(CONF_WEEKEND_CATCHUP, DEFAULT_WEEKEND_CATCHUP)
-        )
-        eligible = _eligible_dates(today, weekend_catchup)
-        window_desc = (
-            str(min(eligible))
-            if len(eligible) == 1
-            else f"{min(eligible)}..{max(eligible)}"
-        )
+        catchup = bool((entry or {}).get(CONF_CATCHUP, DEFAULT_CATCHUP))
 
         try:
             feed_episodes = _fetch_and_parse(feed_url, fetch_timeout)
         except Exception as err:  # noqa: BLE001 - isolate per-feed failures
             errors.append({"name": name, "error": str(err)})
             _LOGGER.error(
-                "%s '%s': feed fetch/parse failed (%s); continuing.",
+                "%s '%s': feed fetch/parse failed (%s); continuing (HWM kept).",
                 LOG_PREFIX,
                 name,
                 err,
             )
             continue
 
-        # All episodes from this feed whose local publish date is in the window
-        # (feed_episodes is already oldest-first).
+        if catchup:
+            # Window lower bound: after the HWM, but no earlier than the
+            # lookback floor; first run (no HWM) starts at today's local start.
+            feed_hwm = _parse_iso(hwm.get(feed_url))
+            if feed_hwm is None:
+                lower = today_start_utc
+            else:
+                lower = max(feed_hwm, lookback_floor)
+            window_desc = f"after {lower.isoformat()}"
+
+            def _in_window(pub, _lower=lower):
+                # Strictly after the HWM lower bound (first run uses >= today
+                # start so today's early episodes are included).
+                return pub > _lower if feed_hwm is not None else pub >= _lower
+        else:
+            # Catch-up off: just today's local date.
+            window_desc = f"today ({today_local})"
+
+            def _in_window(pub):
+                return pub.astimezone(local_tz).date() == today_local
+
         matched = []
         for ep in feed_episodes:
-            published_local_dt = ep["published_dt"].astimezone(local_tz)
-            if published_local_dt.date() in eligible:
-                matched.append((ep, published_local_dt))
+            pub = ep["published_dt"]
+            if not _in_window(pub):
+                continue
+            if ep["guid"] in seen_guids:
+                _LOGGER.debug(
+                    "%s de-dupe %r: already seen guid %s",
+                    LOG_PREFIX,
+                    name,
+                    ep["guid"],
+                )
+                continue
+            matched.append(ep)
 
         if not matched:
             skipped.append({"name": name})
             _LOGGER.info(
-                "%s SKIP %r: no episode in window (%s).",
-                LOG_PREFIX,
-                name,
-                window_desc,
+                "%s SKIP %r: nothing new (%s).", LOG_PREFIX, name, window_desc
             )
             continue
 
-        for ep, published_local_dt in matched:
+        for ep in matched:
+            published_local_dt = ep["published_dt"].astimezone(local_tz)
             included.append(
                 {
                     "name": name,
+                    "guid": ep["guid"],
                     "title": ep["title"],
                     "audio_url": ep["audio_url"],
                     "published_local": published_local_dt.isoformat(),
@@ -394,18 +480,37 @@ def _build_episode_list(
             )
         if len(matched) > 1:
             _LOGGER.info(
-                "%s   (%d episodes from %r in window)",
-                LOG_PREFIX,
-                len(matched),
-                name,
+                "%s   (%d episodes from %r)", LOG_PREFIX, len(matched), name
             )
 
-    return included, skipped, errors
+        # New HWM for this feed = newest included publish time (episodes are
+        # oldest-first, so the last match is newest).
+        new_hwm[feed_url] = matched[-1]["published_dt"].astimezone(
+            dt.timezone.utc
+        ).isoformat()
+
+    return included, skipped, errors, new_hwm
 
 
 # ---------------------------------------------------------------------------
 # Setup + services
 # ---------------------------------------------------------------------------
+
+
+def _normalise_podcasts(podcasts: list[dict]) -> list[dict]:
+    """Migrate legacy per-podcast fields to the current shape.
+
+    Maps the old ``weekend_catchup`` flag onto the new ``catchup`` flag when
+    ``catchup`` isn't already set. Non-destructive and idempotent.
+    """
+    out = []
+    for p in podcasts or []:
+        p = dict(p or {})
+        if CONF_CATCHUP not in p and CONF_WEEKEND_CATCHUP in p:
+            p[CONF_CATCHUP] = bool(p[CONF_WEEKEND_CATCHUP])
+        p.pop(CONF_WEEKEND_CATCHUP, None)
+        out.append(p)
+    return out
 
 
 def _entry_config(hass: HomeAssistant) -> dict[str, Any]:
@@ -417,6 +522,7 @@ def _entry_config(hass: HomeAssistant) -> dict[str, Any]:
     # Options hold the live, UI-editable settings; fall back to entry.data.
     merged = dict(entry.data)
     merged.update(entry.options or {})
+    merged[CONF_PODCASTS] = _normalise_podcasts(merged.get(CONF_PODCASTS))
     return merged
 
 
@@ -454,6 +560,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up the integration from a config entry (the UI-managed path)."""
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN]["entry"] = entry
+
+    # Per-podcast high-water marks (feed_url -> ISO publish time of the newest
+    # episode already included), persisted across restarts via Store.
+    hwm_store: Store = Store(hass, HWM_STORAGE_VERSION, HWM_STORAGE_KEY)
+    hass.data[DOMAIN]["hwm_store"] = hwm_store
+    hass.data[DOMAIN]["hwm"] = (await hwm_store.async_load()) or {}
+
+    async def _async_save_hwm() -> None:
+        await hwm_store.async_save(hass.data[DOMAIN].get("hwm", {}))
 
     async def _async_queue_media(player: str, episodes: list[dict], dry_run: bool):
         """Queue the ordered episodes onto the player.
@@ -589,11 +704,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # --- Core build routine (used by service + daily scheduler) ----------
     async def _run_build(player=None, tz_name=None, dry_run=False, play=True):
-        """Fetch today's episodes, record them to history, and optionally play.
+        """Build the catch-up playlist, record it, and optionally play.
+
+        Includes everything new since each podcast's high-water mark (see
+        _build_episode_list). On a successful, non-dry record the per-podcast
+        HWM is advanced so the same episodes aren't offered again.
 
         play=True  -> record + play now (manual / button / default service call)
-        play=False -> record only ("prepare today's playlist"); used by the
-                      daily schedule so nothing starts playing on its own.
+        play=False -> record only ("prepare the playlist"); the daily schedule
+                      uses this so nothing starts playing on its own.
         """
         cfg = _entry_config(hass)
         podcasts = cfg.get(CONF_PODCASTS) or []
@@ -610,7 +729,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         dry_run = bool(dry_run)
         play = bool(play)
         fetch_timeout = cfg.get(CONF_FETCH_TIMEOUT, DEFAULT_FETCH_TIMEOUT)
+        max_lookback = cfg.get(CONF_MAX_LOOKBACK_DAYS, DEFAULT_MAX_LOOKBACK_DAYS)
         local_tz = _resolve_local_tz(hass, tz_name)
+
+        hwm = dict(hass.data[DOMAIN].get("hwm", {}))
+        base_dir = _history_base_dir()
+        seen_guids = await hass.async_add_executor_job(
+            _recent_guids, base_dir, int(max_lookback)
+        )
 
         _LOGGER.info(
             "%s Starting run: %d podcast(s), player=%s, dry_run=%s, play=%s",
@@ -621,8 +747,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             play,
         )
 
-        included, skipped, errors = await hass.async_add_executor_job(
-            _build_episode_list, podcasts, local_tz, fetch_timeout
+        included, skipped, errors, new_hwm = await hass.async_add_executor_job(
+            _build_episode_list,
+            podcasts,
+            local_tz,
+            fetch_timeout,
+            hwm,
+            seen_guids,
+            int(max_lookback),
         )
 
         _LOGGER.info(
@@ -637,16 +769,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         if included and not dry_run:
             await _async_save_history(today_str, player, included)
+            # Advance per-podcast HWM only for feeds that produced episodes and
+            # were recorded. Feeds that errored/matched nothing are absent from
+            # new_hwm, so their HWM is left intact (retried next run).
+            hwm.update(new_hwm)
+            hass.data[DOMAIN]["hwm"] = hwm
+            await _async_save_hwm()
 
         if not included:
             _LOGGER.info(
-                "%s No podcasts published today; nothing recorded or played.",
+                "%s Nothing new since last run; nothing recorded or played.",
                 LOG_PREFIX,
             )
             return
 
         _LOGGER.info(
-            "%s Today's playlist (%d): %s",
+            "%s Playlist (%d): %s",
             LOG_PREFIX,
             len(included),
             " -> ".join(ep["name"] for ep in included),
@@ -654,7 +792,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         if not play:
             _LOGGER.info(
-                "%s Prepared today's playlist and recorded it to history; not "
+                "%s Prepared the playlist and recorded it to history; not "
                 "playing now (play=False). Use the service/button to play.",
                 LOG_PREFIX,
             )

@@ -64,17 +64,28 @@ HA `config/custom_components/` directory and restart. Home Assistant installs th
 2. For each podcast in your list (in order), it fetches the RSS feed fresh over
    HTTP (cache-busting headers, so "published today" is decided on current
    data) and parses every episode's audio enclosure URL and publish date.
-3. It keeps **all** episodes whose publish date falls in the eligible window
-   (see below), in your Home Assistant timezone — so a feed that drops more than
-   one episode in a day contributes all of them (ordered oldest-first within
-   that feed). Feeds keep your configured list order; feeds with nothing in the
-   window are dropped.
+3. It keeps **all** episodes published **since that podcast was last prepared**,
+   in your Home Assistant timezone — so a feed that drops more than one episode
+   in a day contributes all of them (ordered oldest-first within that feed).
+   Feeds keep your configured list order; feeds with nothing new are dropped.
 
-   **Eligible window:** normally just **today**. On a **Monday** the window also
-   includes the preceding **Saturday and Sunday**, so Monday picks up anything
-   that published over the weekend. This weekend catch-up is **per-podcast**
-   (default on) — turn it off for any podcast via Configure → Edit a podcast if
-   you don't want its weekend episodes bundled into Monday.
+   **Catch-up window (per podcast, default on):** each podcast tracks a
+   high-water mark — the publish time of the newest episode it has already
+   offered you. A run includes everything published after that mark, through
+   now. This is **gap-proof**: whether you missed a day, a weekend, a holiday,
+   or Home Assistant was down, the next run picks up exactly what you haven't
+   been given yet — no weekday special-casing.
+   - **First run** (no mark yet): only today's episodes, so a fresh install
+     doesn't dump the back-catalogue.
+   - **Max look-back** (default 18 days, Settings): caps how far back catch-up
+     reaches, so a very old mark after a long outage can't queue a huge backlog.
+   - **De-duplication:** episodes are tracked by their feed GUID, so an episode
+     you've already been offered is never queued twice, even if its feed's
+     timestamps are fuzzy.
+   - **Catch-up off** (per podcast): that podcast uses **today only** instead.
+   - The mark only advances when a prepare/play actually records episodes;
+     replaying history and dry-runs never move it, and a feed that fails to
+     fetch keeps its mark and retries next run.
 4. It **records** that ordered playlist to a per-day file
    (`config/daily_podcasts_history/YYYY-MM-DD.json`).
 
@@ -170,13 +181,13 @@ Open **Settings → Devices & services → Daily Podcast Queue → Configure**. 
 a small menu:
 
 - **Settings** — change the player, the time to prepare the daily playlist, the
-  "prepare automatically each day" on/off switch, and an optional timezone
-  override.
-- **Add a podcast** — enter a name and RSS feed URL, and whether Monday should
-  include this podcast's weekend episodes (default on). It's added to the end of
-  the list; the URL is validated.
-- **Edit a podcast** — change a podcast's name, feed URL, or its Monday
-  weekend-catch-up setting.
+  "prepare automatically each day" on/off switch, the **max catch-up look-back
+  (days)**, and an optional timezone override.
+- **Add a podcast** — enter a name and RSS feed URL, and whether to **catch up
+  missed episodes** (default on; off = today only). It's added to the end of the
+  list; the URL is validated.
+- **Edit a podcast** — change a podcast's name, feed URL, or its catch-up
+  setting.
 - **Remove a podcast** — pick one from the list to delete.
 - **Move a podcast earlier / later** — reorder the list; playback order follows
   it.
@@ -315,10 +326,14 @@ ready-to-adapt example.
 | Edit the list, nothing else | The ordered podcast list is the one thing you edit, from Configure |
 | Daily prepare without automations.yaml | Built-in schedule via `async_track_time_change`, re-armed on options change |
 | Preserve order while skipping | Included items keep original list order; skipped/failed simply omitted |
-| All of a day's episodes | Every episode in the eligible window is included per feed (not just the newest), oldest-first within the feed |
-| Published-today only, local tz | Each episode's UTC pubDate is converted to `hass.config.time_zone` before comparing dates |
-| Monday catches up the weekend | On Mondays the eligible window is Sat + Sun + Mon; other days are just that day |
-| Per-podcast weekend catch-up | Each podcast has its own weekend-catch-up flag (default on), set from Add/Edit a podcast |
+| All of a day's episodes | Every episode in the catch-up window is included per feed (not just the newest), oldest-first within the feed |
+| Local-tz dates | Each episode's UTC pubDate is converted to `hass.config.time_zone` before comparing |
+| Never miss anything | Per-podcast high-water mark: each run includes everything published since the last successful prepare (gap-proof across missed days/outages) |
+| No duplicates | Mark advances only on recorded prepares; GUID de-dupe against recent history; replays/dry-runs don't advance it |
+| Bounded backlog | Max look-back (default 18 days) caps how far catch-up reaches |
+| First run is safe | No mark yet → today only, so a fresh install doesn't dump the back-catalogue |
+| Per-podcast catch-up | Each podcast has a catch-up on/off flag (default on; off = today only), set from Add/Edit a podcast |
+| Resilient to feed outages | A feed that fails to fetch keeps its mark and retries next run |
 | Fresh data | Feeds are fetched over HTTP with no-cache headers at trigger time |
 | Queue on Sonos in order | `mass.play_media` (one ordered list) when MA is present; else clear queue + first `enqueue: play` + rest `enqueue: add` so a real Sonos queue is built and advances |
 | Works without Music Assistant | Falls back to native `media_player` services on the chosen player |

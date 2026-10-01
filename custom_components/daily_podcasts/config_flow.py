@@ -18,6 +18,9 @@ from homeassistant.helpers.selector import (
     BooleanSelector,
     EntitySelector,
     EntitySelectorConfig,
+    NumberSelector,
+    NumberSelectorConfig,
+    NumberSelectorMode,
     SelectSelector,
     SelectSelectorConfig,
     SelectSelectorMode,
@@ -33,12 +36,15 @@ from .const import (
     CONF_FEED_URL,
     CONF_NAME,
     CONF_PLAYER,
+    CONF_CATCHUP,
+    CONF_MAX_LOOKBACK_DAYS,
     CONF_PODCASTS,
     CONF_TIMEZONE,
     CONF_WEEKEND_CATCHUP,
     DEFAULT_AT,
+    DEFAULT_CATCHUP,
     DEFAULT_ENABLED,
-    DEFAULT_WEEKEND_CATCHUP,
+    DEFAULT_MAX_LOOKBACK_DAYS,
     DOMAIN,
     STEP_ADD,
     STEP_EDIT,
@@ -110,8 +116,11 @@ class DailyPodcastsConfigFlow(ConfigFlow, domain=DOMAIN):
             {
                 CONF_NAME: p.get(CONF_NAME),
                 CONF_FEED_URL: p.get(CONF_FEED_URL),
-                CONF_WEEKEND_CATCHUP: bool(
-                    p.get(CONF_WEEKEND_CATCHUP, DEFAULT_WEEKEND_CATCHUP)
+                CONF_CATCHUP: bool(
+                    p.get(
+                        CONF_CATCHUP,
+                        p.get(CONF_WEEKEND_CATCHUP, DEFAULT_CATCHUP),
+                    )
                 ),
             }
             for p in (import_data.get(CONF_PODCASTS) or [])
@@ -160,6 +169,11 @@ class DailyPodcastsOptionsFlow(OptionsFlowWithReload):
             opts[CONF_PLAYER] = user_input[CONF_PLAYER]
             opts[CONF_AT] = _normalise_time(user_input.get(CONF_AT, DEFAULT_AT))
             opts[CONF_ENABLED] = user_input.get(CONF_ENABLED, DEFAULT_ENABLED)
+            opts[CONF_MAX_LOOKBACK_DAYS] = int(
+                user_input.get(
+                    CONF_MAX_LOOKBACK_DAYS, DEFAULT_MAX_LOOKBACK_DAYS
+                )
+            )
             tz = (user_input.get(CONF_TIMEZONE) or "").strip()
             if tz:
                 opts[CONF_TIMEZONE] = tz
@@ -178,6 +192,16 @@ class DailyPodcastsOptionsFlow(OptionsFlowWithReload):
                 vol.Optional(
                     CONF_ENABLED, default=opts.get(CONF_ENABLED, DEFAULT_ENABLED)
                 ): BooleanSelector(),
+                vol.Optional(
+                    CONF_MAX_LOOKBACK_DAYS,
+                    default=opts.get(
+                        CONF_MAX_LOOKBACK_DAYS, DEFAULT_MAX_LOOKBACK_DAYS
+                    ),
+                ): NumberSelector(
+                    NumberSelectorConfig(
+                        min=1, max=90, step=1, mode=NumberSelectorMode.BOX
+                    )
+                ),
                 vol.Optional(
                     CONF_TIMEZONE, default=opts.get(CONF_TIMEZONE, "")
                 ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
@@ -206,8 +230,8 @@ class DailyPodcastsOptionsFlow(OptionsFlowWithReload):
                     {
                         CONF_NAME: name,
                         CONF_FEED_URL: url,
-                        CONF_WEEKEND_CATCHUP: user_input.get(
-                            CONF_WEEKEND_CATCHUP, DEFAULT_WEEKEND_CATCHUP
+                        CONF_CATCHUP: user_input.get(
+                            CONF_CATCHUP, DEFAULT_CATCHUP
                         ),
                     }
                 )
@@ -223,7 +247,7 @@ class DailyPodcastsOptionsFlow(OptionsFlowWithReload):
                     TextSelectorConfig(type=TextSelectorType.URL)
                 ),
                 vol.Optional(
-                    CONF_WEEKEND_CATCHUP, default=DEFAULT_WEEKEND_CATCHUP
+                    CONF_CATCHUP, default=DEFAULT_CATCHUP
                 ): BooleanSelector(),
             }
         )
@@ -272,9 +296,7 @@ class DailyPodcastsOptionsFlow(OptionsFlowWithReload):
                 podcasts[idx] = {
                     CONF_NAME: name,
                     CONF_FEED_URL: url,
-                    CONF_WEEKEND_CATCHUP: user_input.get(
-                        CONF_WEEKEND_CATCHUP, DEFAULT_WEEKEND_CATCHUP
-                    ),
+                    CONF_CATCHUP: user_input.get(CONF_CATCHUP, DEFAULT_CATCHUP),
                 }
                 opts = dict(self.config_entry.options)
                 opts[CONF_PODCASTS] = podcasts
@@ -289,9 +311,12 @@ class DailyPodcastsOptionsFlow(OptionsFlowWithReload):
                     CONF_FEED_URL, default=current.get(CONF_FEED_URL, "")
                 ): TextSelector(TextSelectorConfig(type=TextSelectorType.URL)),
                 vol.Optional(
-                    CONF_WEEKEND_CATCHUP,
+                    CONF_CATCHUP,
                     default=bool(
-                        current.get(CONF_WEEKEND_CATCHUP, DEFAULT_WEEKEND_CATCHUP)
+                        current.get(
+                            CONF_CATCHUP,
+                            current.get(CONF_WEEKEND_CATCHUP, DEFAULT_CATCHUP),
+                        )
                     ),
                 ): BooleanSelector(),
             }

@@ -1,10 +1,11 @@
 build_queue:
   name: Build and play today's podcast queue
   description: >
-    Fetch each configured podcast feed, keep only episodes published today (in
-    the local timezone) in listening order, record the playlist to history, and
-    (by default) play it on the configured player. Pass play=false to only
-    prepare/record the playlist without playing.
+    Fetch each configured podcast feed and include every episode published
+    since that podcast was last prepared (per-podcast catch-up; podcasts with
+    catch-up off use today only), in listening order, record the playlist to
+    history, and (by default) play it on the configured player. Pass play=false
+    to only prepare/record the playlist without playing.
   fields:
     player:
       name: Player

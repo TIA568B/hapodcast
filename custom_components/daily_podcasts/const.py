@@ -7,10 +7,14 @@ CONF_PLAYER = "player"
 CONF_PODCASTS = "podcasts"
 CONF_NAME = "name"
 CONF_FEED_URL = "feed_url"
-CONF_WEEKEND_CATCHUP = "weekend_catchup"  # per-podcast: Mon includes Sat+Sun
+# Per-podcast: catch up everything since the last successful prepare (vs just
+# today). Replaces the old `weekend_catchup` flag (migrated on read).
+CONF_CATCHUP = "catchup"
+CONF_WEEKEND_CATCHUP = "weekend_catchup"  # legacy key, migrated to CONF_CATCHUP
 CONF_TIMEZONE = "timezone"
 CONF_FETCH_TIMEOUT = "fetch_timeout"
 CONF_HISTORY_DIR = "history_dir"
+CONF_MAX_LOOKBACK_DAYS = "max_lookback_days"
 CONF_AT = "at"  # daily "prepare playlist" time, "HH:MM:SS"
 CONF_ENABLED = "enabled"  # daily prepare on/off
 
@@ -19,7 +23,12 @@ DEFAULT_FETCH_TIMEOUT = 20
 DEFAULT_HISTORY_DIR = "daily_podcasts_history"
 DEFAULT_AT = "06:00:00"
 DEFAULT_ENABLED = True
-DEFAULT_WEEKEND_CATCHUP = True
+DEFAULT_CATCHUP = True
+DEFAULT_MAX_LOOKBACK_DAYS = 18
+
+# Per-podcast high-water mark storage (helpers.storage.Store).
+HWM_STORAGE_KEY = "daily_podcasts_hwm"
+HWM_STORAGE_VERSION = 1
 
 # Options-flow menu step ids
 STEP_INIT = "init"
