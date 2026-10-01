@@ -392,13 +392,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         """Queue the ordered episodes onto the player.
 
         Prefers Music Assistant's ``mass.play_media`` when that service is
-        registered (it accepts the whole ordered list in one call). When Music
-        Assistant isn't available, falls back to the built-in
-        ``media_player.play_media`` service, which works with the native Sonos
-        integration: the first episode is sent with ``enqueue: replace`` (clears
-        the queue and starts playback) and the rest with ``enqueue: add``
-        (append in order). Either path is idempotent on re-run because the first
-        item always replaces the existing queue.
+        registered (it accepts the whole ordered list in one call, enqueue=replace).
+
+        Without Music Assistant it uses the built-in ``media_player`` services,
+        which it drives in a Sonos-correct way for plain HTTP enclosure URLs:
+
+          1. ``media_player.clear_playlist`` — empty the queue first, so a
+             re-run rebuilds the same queue instead of appending duplicates
+             (idempotent).
+          2. First episode -> ``enqueue: play`` — this adds the URL to the
+             *queue* and starts it. (``enqueue: replace`` is deliberately NOT
+             used: for a bare URL Sonos treats replace as a one-off stream and
+             never builds a queue, so later items can't append -- the bug this
+             fixes.)
+          3. Remaining episodes -> ``enqueue: add`` — append to that queue in
+             order, so playback advances episode to episode.
         """
         media_ids = [ep["audio_url"] for ep in episodes]
         use_mass = hass.services.has_service(MASS_DOMAIN, MASS_PLAY_MEDIA)
@@ -418,8 +426,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         if dry_run:
             _LOGGER.info(
-                "%s dry_run: would queue %d item(s) on %s via %s "
-                "(enqueue=replace, then add).",
+                "%s dry_run: would queue %d item(s) on %s via %s.",
                 LOG_PREFIX,
                 len(media_ids),
                 player,
@@ -441,11 +448,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             )
             return
 
-        # Native fallback: media_player.play_media takes one item per call.
+        # Native fallback (e.g. the Sonos integration). Clear the queue first,
+        # then build a real queue: first item "play", rest "add".
         import asyncio
 
+        try:
+            await hass.services.async_call(
+                "media_player",
+                "clear_playlist",
+                {"entity_id": player},
+                blocking=True,
+            )
+        except Exception as err:  # noqa: BLE001 - not fatal; continue
+            _LOGGER.debug(
+                "%s clear_playlist failed/unsupported on %s (%s); continuing.",
+                LOG_PREFIX,
+                player,
+                err,
+            )
+
         for index, media_id in enumerate(media_ids):
-            enqueue = "replace" if index == 0 else "add"
+            enqueue = "play" if index == 0 else "add"
             await hass.services.async_call(
                 "media_player",
                 "play_media",
@@ -457,9 +480,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 },
                 blocking=True,
             )
-            # Small gap so Sonos processes each enqueue in order.
+            # Give Sonos a moment to establish the queue after the first item
+            # before appending the rest, so the appends land reliably.
             if index == 0 and len(media_ids) > 1:
-                await asyncio.sleep(2)
+                await asyncio.sleep(3)
 
     def _history_base_dir() -> str:
         cfg = _entry_config(hass)

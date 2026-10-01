@@ -77,9 +77,11 @@ HA `config/custom_components/` directory and restart. Home Assistant installs th
    playing the episodes back-to-back:
    - **With Music Assistant**: one `mass.play_media` call with the whole list,
      `enqueue: replace`.
-   - **Without Music Assistant**: `media_player.play_media` per episode — the
-     first with `enqueue: replace`, the rest with `enqueue: add` (append in
-     order). Works with the native Sonos integration.
+   - **Without Music Assistant** (native Sonos): clear the queue
+     (`media_player.clear_playlist`), queue the first episode with
+     `enqueue: play` (which builds a real Sonos queue and starts it), then
+     append the rest with `enqueue: add`, so playback advances episode to
+     episode.
 
    To replay a previous day instead, use `daily_podcasts.play_history` (see
    [Catch-up](#catch-up-replay-past-days)).
@@ -303,8 +305,8 @@ ready-to-adapt example.
 | Preserve order while skipping | Included items keep original list order; skipped/failed simply omitted |
 | Published-today only, local tz | Each episode's UTC pubDate is converted to `hass.config.time_zone` before comparing dates |
 | Fresh data | Feeds are fetched over HTTP with no-cache headers at trigger time |
-| Queue on Sonos in order | `mass.play_media` (one ordered list) when MA is present, else `media_player.play_media` replace-then-add; both clear the queue first |
-| Works without Music Assistant | Falls back to native `media_player.play_media` on the chosen player |
+| Queue on Sonos in order | `mass.play_media` (one ordered list) when MA is present; else clear queue + first `enqueue: play` + rest `enqueue: add` so a real Sonos queue is built and advances |
+| Works without Music Assistant | Falls back to native `media_player` services on the chosen player |
 | Feed failure isolation | Per-feed try/except logs the error and continues |
 | Nothing today | No episodes → no service call, speaker untouched, logged |
 | Idempotent reruns | `enqueue: replace` rebuilds the same queue, no duplicates |
