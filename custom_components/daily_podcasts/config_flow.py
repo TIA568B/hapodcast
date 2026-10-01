@@ -34,11 +34,9 @@ from .const import (
     CONF_NAME,
     CONF_PLAYER,
     CONF_PODCASTS,
-    CONF_RECORD_ONLY,
     CONF_TIMEZONE,
     DEFAULT_AT,
     DEFAULT_ENABLED,
-    DEFAULT_RECORD_ONLY,
     DOMAIN,
     STEP_ADD,
     STEP_MOVE_DOWN,
@@ -78,9 +76,6 @@ class DailyPodcastsConfigFlow(ConfigFlow, domain=DOMAIN):
                 CONF_PLAYER: user_input[CONF_PLAYER],
                 CONF_AT: _normalise_time(user_input.get(CONF_AT, DEFAULT_AT)),
                 CONF_ENABLED: user_input.get(CONF_ENABLED, DEFAULT_ENABLED),
-                CONF_RECORD_ONLY: user_input.get(
-                    CONF_RECORD_ONLY, DEFAULT_RECORD_ONLY
-                ),
                 CONF_PODCASTS: [],
             }
             return self.async_create_entry(
@@ -95,9 +90,6 @@ class DailyPodcastsConfigFlow(ConfigFlow, domain=DOMAIN):
                 vol.Optional(CONF_AT, default=DEFAULT_AT): TimeSelector(),
                 vol.Optional(
                     CONF_ENABLED, default=DEFAULT_ENABLED
-                ): BooleanSelector(),
-                vol.Optional(
-                    CONF_RECORD_ONLY, default=DEFAULT_RECORD_ONLY
                 ): BooleanSelector(),
             }
         )
@@ -119,9 +111,6 @@ class DailyPodcastsConfigFlow(ConfigFlow, domain=DOMAIN):
             CONF_PLAYER: import_data.get(CONF_PLAYER),
             CONF_AT: DEFAULT_AT,
             CONF_ENABLED: DEFAULT_ENABLED,
-            CONF_RECORD_ONLY: import_data.get(
-                CONF_RECORD_ONLY, DEFAULT_RECORD_ONLY
-            ),
             CONF_PODCASTS: podcasts,
         }
         if import_data.get(CONF_TIMEZONE):
@@ -161,9 +150,6 @@ class DailyPodcastsOptionsFlow(OptionsFlowWithReload):
             opts[CONF_PLAYER] = user_input[CONF_PLAYER]
             opts[CONF_AT] = _normalise_time(user_input.get(CONF_AT, DEFAULT_AT))
             opts[CONF_ENABLED] = user_input.get(CONF_ENABLED, DEFAULT_ENABLED)
-            opts[CONF_RECORD_ONLY] = user_input.get(
-                CONF_RECORD_ONLY, DEFAULT_RECORD_ONLY
-            )
             tz = (user_input.get(CONF_TIMEZONE) or "").strip()
             if tz:
                 opts[CONF_TIMEZONE] = tz
@@ -181,10 +167,6 @@ class DailyPodcastsOptionsFlow(OptionsFlowWithReload):
                 ): TimeSelector(),
                 vol.Optional(
                     CONF_ENABLED, default=opts.get(CONF_ENABLED, DEFAULT_ENABLED)
-                ): BooleanSelector(),
-                vol.Optional(
-                    CONF_RECORD_ONLY,
-                    default=opts.get(CONF_RECORD_ONLY, DEFAULT_RECORD_ONLY),
                 ): BooleanSelector(),
                 vol.Optional(
                     CONF_TIMEZONE, default=opts.get(CONF_TIMEZONE, "")

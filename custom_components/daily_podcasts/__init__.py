@@ -43,8 +43,8 @@ from .const import (
     ATTR_DAYS,
     ATTR_DRY_RUN,
     ATTR_END,
+    ATTR_PLAY,
     ATTR_PLAYER,
-    ATTR_RECORD_ONLY,
     ATTR_SINCE,
     ATTR_START,
     ATTR_TZ,
@@ -56,14 +56,12 @@ from .const import (
     CONF_NAME,
     CONF_PLAYER,
     CONF_PODCASTS,
-    CONF_RECORD_ONLY,
     CONF_TIMEZONE,
     DATE_FMT,
     DEFAULT_AT,
     DEFAULT_ENABLED,
     DEFAULT_FETCH_TIMEOUT,
     DEFAULT_HISTORY_DIR,
-    DEFAULT_RECORD_ONLY,
     DOMAIN,
     LOG_PREFIX,
     MASS_DOMAIN,
@@ -103,9 +101,6 @@ CONFIG_SCHEMA = vol.Schema(
                 vol.Optional(
                     CONF_HISTORY_DIR, default=DEFAULT_HISTORY_DIR
                 ): cv.string,
-                vol.Optional(
-                    CONF_RECORD_ONLY, default=DEFAULT_RECORD_ONLY
-                ): cv.boolean,
             }
         )
     },
@@ -118,7 +113,7 @@ BUILD_QUEUE_SCHEMA = vol.Schema(
         vol.Optional(ATTR_PLAYER): cv.entity_id,
         vol.Optional(ATTR_TZ): cv.string,
         vol.Optional(ATTR_DRY_RUN): cv.boolean,
-        vol.Optional(ATTR_RECORD_ONLY): cv.boolean,
+        vol.Optional(ATTR_PLAY): cv.boolean,
     }
 )
 
@@ -502,7 +497,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             )
 
     # --- Core build routine (used by service + daily scheduler) ----------
-    async def _run_build(player=None, tz_name=None, dry_run=False, record_only=None):
+    async def _run_build(player=None, tz_name=None, dry_run=False, play=True):
+        """Fetch today's episodes, record them to history, and optionally play.
+
+        play=True  -> record + play now (manual / button / default service call)
+        play=False -> record only ("prepare today's playlist"); used by the
+                      daily schedule so nothing starts playing on its own.
+        """
         cfg = _entry_config(hass)
         podcasts = cfg.get(CONF_PODCASTS) or []
         if not podcasts:
@@ -516,20 +517,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         player = player or cfg.get(CONF_PLAYER)
         tz_name = tz_name or cfg.get(CONF_TIMEZONE)
         dry_run = bool(dry_run)
-        if record_only is None:
-            record_only = cfg.get(CONF_RECORD_ONLY, DEFAULT_RECORD_ONLY)
-        record_only = bool(record_only)
+        play = bool(play)
         fetch_timeout = cfg.get(CONF_FETCH_TIMEOUT, DEFAULT_FETCH_TIMEOUT)
         local_tz = _resolve_local_tz(hass, tz_name)
 
         _LOGGER.info(
-            "%s Starting run: %d podcast(s), player=%s, dry_run=%s, "
-            "record_only=%s",
+            "%s Starting run: %d podcast(s), player=%s, dry_run=%s, play=%s",
             LOG_PREFIX,
             len(podcasts),
             player,
             dry_run,
-            record_only,
+            play,
         )
 
         included, skipped, errors = await hass.async_add_executor_job(
@@ -551,20 +549,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         if not included:
             _LOGGER.info(
-                "%s No podcasts published today; leaving the player untouched.",
+                "%s No podcasts published today; nothing recorded or played.",
                 LOG_PREFIX,
             )
             return
 
         _LOGGER.info(
-            "%s Final queue order: %s",
+            "%s Today's playlist (%d): %s",
             LOG_PREFIX,
+            len(included),
             " -> ".join(ep["name"] for ep in included),
         )
 
-        if record_only:
+        if not play:
             _LOGGER.info(
-                "%s record_only: saved to history, not playing now.", LOG_PREFIX
+                "%s Prepared today's playlist and recorded it to history; not "
+                "playing now (play=False). Use the service/button to play.",
+                LOG_PREFIX,
             )
             return
 
@@ -572,11 +573,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # --- Service: build_queue --------------------------------------------
     async def handle_build_queue(call: ServiceCall) -> None:
+        # Plays by default; pass play: false to only prepare/record.
         await _run_build(
             player=call.data.get(ATTR_PLAYER),
             tz_name=call.data.get(ATTR_TZ),
             dry_run=call.data.get(ATTR_DRY_RUN, False),
-            record_only=call.data.get(ATTR_RECORD_ONLY),
+            play=call.data.get(ATTR_PLAY, True),
         )
 
     # --- Service: play_history -------------------------------------------
@@ -710,8 +712,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # --- Daily scheduler (internal; no automations.yaml needed) ----------
     async def _scheduled_run(now):
-        _LOGGER.info("%s Scheduled daily run triggered at %s", LOG_PREFIX, now)
-        await _run_build()
+        # The daily schedule only PREPARES today's playlist (records it to
+        # history). It never auto-plays -- you play it on demand via the
+        # service/button. Pass play=False.
+        _LOGGER.info(
+            "%s Scheduled daily run at %s: preparing today's playlist.",
+            LOG_PREFIX,
+            now,
+        )
+        await _run_build(play=False)
 
     def _arm_schedule() -> None:
         """(Re)arm the daily time trigger from the current options."""

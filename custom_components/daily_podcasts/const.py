@@ -10,14 +10,12 @@ CONF_FEED_URL = "feed_url"
 CONF_TIMEZONE = "timezone"
 CONF_FETCH_TIMEOUT = "fetch_timeout"
 CONF_HISTORY_DIR = "history_dir"
-CONF_RECORD_ONLY = "record_only"
-CONF_AT = "at"  # daily trigger time, "HH:MM:SS"
-CONF_ENABLED = "enabled"  # daily auto-run on/off
+CONF_AT = "at"  # daily "prepare playlist" time, "HH:MM:SS"
+CONF_ENABLED = "enabled"  # daily prepare on/off
 
 # Defaults
 DEFAULT_FETCH_TIMEOUT = 20
 DEFAULT_HISTORY_DIR = "daily_podcasts_history"
-DEFAULT_RECORD_ONLY = False
 DEFAULT_AT = "06:00:00"
 DEFAULT_ENABLED = True
 
@@ -37,7 +35,7 @@ SERVICE_PLAY_HISTORY = "play_history"
 ATTR_PLAYER = "player"
 ATTR_TZ = "tz"
 ATTR_DRY_RUN = "dry_run"
-ATTR_RECORD_ONLY = "record_only"
+ATTR_PLAY = "play"
 ATTR_DATE = "date"
 ATTR_START = "start"
 ATTR_END = "end"

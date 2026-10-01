@@ -1,18 +1,26 @@
 build_queue:
-  name: Build today's podcast queue
+  name: Build and play today's podcast queue
   description: >
     Fetch each configured podcast feed, keep only episodes published today (in
     the local timezone) in listening order, record the playlist to history, and
-    queue it on the Music Assistant player.
+    (by default) play it on the configured player. Pass play=false to only
+    prepare/record the playlist without playing.
   fields:
     player:
       name: Player
-      description: Music Assistant / Sonos media_player to queue onto. Defaults to the configured player.
+      description: Sonos / media_player to queue onto. Defaults to the configured player.
       required: false
-      example: media_player.sonos_kitchen
+      example: media_player.office
       selector:
         entity:
           domain: media_player
+    play:
+      name: Play now
+      description: Play the queue immediately. Turn off to only prepare/record today's playlist.
+      required: false
+      default: true
+      selector:
+        boolean:
     tz:
       name: Timezone
       description: IANA timezone name used to decide "today". Defaults to HA's local timezone.
@@ -23,13 +31,6 @@ build_queue:
     dry_run:
       name: Dry run
       description: Log the plan without touching the player or writing history.
-      required: false
-      default: false
-      selector:
-        boolean:
-    record_only:
-      name: Record only
-      description: Record today's playlist to history but do not play it now.
       required: false
       default: false
       selector:

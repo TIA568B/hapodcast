@@ -3,12 +3,11 @@
     "step": {
       "user": {
         "title": "Daily Podcast Queue",
-        "description": "Pick the Music Assistant / Sonos player and the time the daily queue should build. You'll add podcasts next, from Configure.",
+        "description": "Pick the Sonos / media player to play on, and the time each morning to prepare that day's playlist. Preparing never auto-plays — you play it on demand. You'll add podcasts next, from Configure.",
         "data": {
           "player": "Player",
-          "at": "Daily run time",
-          "enabled": "Run automatically each day",
-          "record_only": "Record only (don't auto-play)"
+          "at": "Time to prepare the daily playlist",
+          "enabled": "Prepare a playlist automatically each day"
         }
       }
     },
@@ -33,9 +32,8 @@
         "title": "Settings",
         "data": {
           "player": "Player",
-          "at": "Daily run time",
-          "enabled": "Run automatically each day",
-          "record_only": "Record only (don't auto-play)",
+          "at": "Time to prepare the daily playlist",
+          "enabled": "Prepare a playlist automatically each day",
           "timezone": "Timezone override (optional, e.g. America/New_York)"
         }
       },

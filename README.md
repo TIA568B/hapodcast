@@ -1,22 +1,27 @@
 # Daily Podcast Queue
 
-A Home Assistant **custom integration** that, every morning, builds a "playlist"
-of the podcasts that published a new episode **today** and queues them on a Sonos
-speaker — in your chosen listening order, silently skipping any podcast with
-nothing new.
+A Home Assistant **custom integration** that prepares a daily "playlist" of the
+podcasts that published a new episode **today** — in your chosen listening order,
+silently skipping any podcast with nothing new — ready for you to **play on
+demand** on a Sonos speaker when you have time.
 
-It queues through **Music Assistant** (`mass.play_media`) when that's available,
-and otherwise falls back to Home Assistant's built-in `media_player.play_media`,
-so it works with a plain Sonos speaker even if Music Assistant isn't set up.
+**It never auto-plays.** Each morning it quietly *prepares* that day's playlist
+(fetches feeds, works out today's episodes, records them). You then press a
+button — or call the service, or trigger it from your own automation — to
+actually play it. Nothing starts blasting out of a speaker at 6am.
 
-It also **records each day's playlist**, so you can replay past days later — play
-catch-up after a holiday, for example — even after those episodes have aged out
-of the feeds. It runs every morning on its own schedule whether you're home or
-away, so history builds up automatically; you just replay it when you're back.
+Playback goes through **Music Assistant** (`mass.play_media`) when that's
+available, and otherwise falls back to Home Assistant's built-in
+`media_player.play_media`, so it works with a plain Sonos speaker even without
+Music Assistant.
+
+Because every day's playlist is **recorded**, you can also replay past days —
+play catch-up after a holiday, for example — even after those episodes have aged
+out of the feeds.
 
 No external API, no cloud service — just the podcasts' own RSS feeds.
 **Everything is managed from the Home Assistant UI** — no YAML editing. You add,
-remove, and reorder podcasts and set the run time from the integration's
+remove, and reorder podcasts and set the prepare time from the integration's
 **Configure** screen.
 
 ---
@@ -52,8 +57,10 @@ HA `config/custom_components/` directory and restart. Home Assistant installs th
 
 ## How it works
 
-1. At the time you set, the integration's built-in daily schedule runs the same
-   logic as the `daily_podcasts.build_queue` service (no automation needed).
+**Preparing (automatic, each morning — no sound):**
+
+1. At the time you set, the integration's built-in daily schedule runs — in
+   "prepare only" mode (`build_queue` with `play: false`). It never plays.
 2. For each podcast in your list (in order), it fetches the RSS feed fresh over
    HTTP (cache-busting headers, so "published today" is decided on current
    data), parses the newest episode's audio enclosure URL and publish date.
@@ -61,13 +68,21 @@ HA `config/custom_components/` directory and restart. Home Assistant installs th
    Assistant timezone**, preserving your list order and dropping the rest.
 4. It **records** that ordered playlist to a per-day file
    (`config/daily_podcasts_history/YYYY-MM-DD.json`).
-5. It queues the ordered list on your player, clearing the old queue first and
+
+**Playing (on demand — when you ask):**
+
+5. When you press the button / call `daily_podcasts.build_queue` (which plays by
+   default) / fire it from your own automation, it builds today's playlist the
+   same way and queues it on your player, clearing the old queue first and
    playing the episodes back-to-back:
    - **With Music Assistant**: one `mass.play_media` call with the whole list,
      `enqueue: replace`.
    - **Without Music Assistant**: `media_player.play_media` per episode — the
      first with `enqueue: replace`, the rest with `enqueue: add` (append in
      order). Works with the native Sonos integration.
+
+   To replay a previous day instead, use `daily_podcasts.play_history` (see
+   [Catch-up](#catch-up-replay-past-days)).
 
 Failures are isolated: a single unreachable or malformed feed is logged and the
 rest of the list still plays. If nothing published today, it logs that and
@@ -123,8 +138,9 @@ Everything is done in the UI — no YAML.
 1. **Settings → Devices & services → Add integration →** search **Daily Podcast
    Queue**.
 2. In the setup dialog, choose your **Player** (the Sonos / Music Assistant
-   `media_player`), the **daily run time** (default 06:00), and whether it should
-   **run automatically each day**.
+   `media_player`), the **time to prepare the daily playlist** (default 06:00),
+   and whether to **prepare a playlist automatically each day**. (Preparing
+   never plays — it just gets today's playlist ready.)
 3. Finish. Then open the integration's **Configure** button to add your
    podcasts.
 
@@ -142,8 +158,9 @@ Check **Settings → System → Logs** for lines beginning `[daily_podcasts]`.
 Open **Settings → Devices & services → Daily Podcast Queue → Configure**. You get
 a small menu:
 
-- **Settings** — change the player, the daily run time, the automatic-run
-  on/off switch, record-only mode, and an optional timezone override.
+- **Settings** — change the player, the time to prepare the daily playlist, the
+  "prepare automatically each day" on/off switch, and an optional timezone
+  override.
 - **Add a podcast** — enter a name and RSS feed URL. It's added to the end of
   the list; the URL is validated.
 - **Remove a podcast** — pick one from the list to delete.
@@ -153,49 +170,69 @@ a small menu:
 Changes take effect immediately (the integration reloads itself and re-arms the
 daily schedule). No restart, no YAML.
 
-**Record-only mode**: turn it on in Settings if you never want the morning
-auto-play and instead always listen via catch-up. History is still recorded
-every day.
-
-**Turn the daily run off**: uncheck "Run automatically each day" in Settings.
-You can still trigger it manually or via the service any time.
+**Turn off the automatic daily prepare**: uncheck "Prepare a playlist
+automatically each day" in Settings. You can still prepare/play on demand any
+time via the button or service.
 
 ---
 
-## Manually re-run it (for testing)
+## Play it (on demand)
 
-Any of these:
+The daily schedule only *prepares* the playlist; **you** decide when to play.
+Any of these plays today's episodes on your player:
 
-- **Developer Tools → Actions**: pick **Daily Podcast Queue: Build today's
-  podcast queue** (`daily_podcasts.build_queue`), Perform action.
-- YAML with overrides, e.g. a dry run against another speaker:
+- **A dashboard button** — the recommended setup. See
+  [Buttons on a dashboard](#buttons-on-a-dashboard) below.
+- **Developer Tools → Actions**: pick **Daily Podcast Queue: Build and play
+  today's podcast queue** (`daily_podcasts.build_queue`) and Perform action — it
+  plays by default.
+- **Your own automation** calling `daily_podcasts.build_queue` (e.g. tied to
+  arriving home, a voice command, etc.).
 
-  ```yaml
-  action: daily_podcasts.build_queue
-  data:
-    dry_run: true
-    player: media_player.sonos_office
-  ```
+Useful options on `build_queue`:
 
-`dry_run: true` logs the exact queue it would build (which podcasts are
-included/skipped and in what order) without touching playback or writing
-history — handy for verifying your list.
+```yaml
+action: daily_podcasts.build_queue
+data:
+  player: media_player.office   # override the configured player
+  play: false                   # prepare/record only, don't play
+  dry_run: true                 # log the plan, touch nothing
+```
 
-Re-running the same day is safe: it rebuilds the identical queue with
-`enqueue: replace`, so you never get duplicates.
+- `play: false` — prepare today's playlist without playing (same as the daily
+  schedule).
+- `dry_run: true` — logs which podcasts are included/skipped and in what order,
+  without playing or writing history. Handy for verifying your list.
+
+Re-running the same day is safe: it rebuilds the identical queue, replacing the
+old one, so you never get duplicates.
+
+### Buttons on a dashboard
+
+A ready-made set of helpers + automations is included (created on your instance):
+
+- **Play Daily Podcasts** (`input_button.play_daily_podcasts`) → plays today's
+  playlist on the office Sonos.
+- **Podcast Catch Up Range** (`input_select.podcast_catch_up_range`) → pick
+  "Last N days" / "Everything recorded".
+- **Play Podcast Catch Up** (`input_button.play_podcast_catch_up`) → plays the
+  selected range.
+
+Add those three to a dashboard card. Press **Play Daily Podcasts** when you're
+ready to listen; set a range and press **Play Podcast Catch Up** to catch up.
 
 ---
 
 ## Catch-up: replay past days
 
 Every daily run saves the playlist it built to
-`config/daily_podcasts_history/YYYY-MM-DD.json`. Because the automation runs
+`config/daily_podcasts_history/YYYY-MM-DD.json`. Because the daily prepare runs
 every morning regardless of whether you're home, those files pile up while
 you're away with nothing for you to switch on. When you're back, replay them
 with `daily_podcasts.play_history`.
 
 Days play in **chronological order**, and within each day the original podcast
-order is preserved. The whole span is queued the same way as the daily run
+order is preserved. The whole span is queued the same way as a normal play
 (`mass.play_media` if Music Assistant is available, otherwise
 `media_player.play_media` replace-then-add), clearing the previous queue first —
 so it's a single continuous queue, and re-running it rebuilds the same queue
@@ -246,12 +283,11 @@ log exactly what would play without touching the speaker.
 all recorded days). Only days that actually have a recorded file are included;
 requesting a day with no file is silently skipped.
 
-**A tidy "since I last listened" button.** The daily build is scheduled inside
-the integration, so you don't need any automation for normal use. If you'd like
-a one-tap catch-up button, create an `input_datetime` helper (e.g.
-`input_datetime.podcasts_last_played`) and point a dashboard button / NFC tag at
-`daily_podcasts.play_history` with `since:` set from that helper. The optional
-`automations.yaml` in this repo has a ready-to-adapt example.
+The preset **Podcast Catch Up Range** picker (Last N days / Everything) covers
+most catch-up needs. If you'd rather catch up from an **exact date**, create a
+Date `input_datetime` helper and point a button at `daily_podcasts.play_history`
+with `since:` set from it — the optional `automations.yaml` in this repo has a
+ready-to-adapt example.
 
 ---
 
@@ -259,9 +295,11 @@ a one-tap catch-up button, create an `input_datetime` helper (e.g.
 
 | Requirement | How |
 | --- | --- |
+| Never auto-plays | Daily schedule runs `build_queue` with `play: false` — it only prepares/records; playback happens only on an explicit call |
+| Play on demand | Button / service / your automation calls `build_queue` (plays by default) |
 | Manage without YAML | Config flow + options menu (add/remove/reorder/settings) in the UI |
 | Edit the list, nothing else | The ordered podcast list is the one thing you edit, from Configure |
-| Daily run without automations.yaml | Built-in schedule via `async_track_time_change`, re-armed on options change |
+| Daily prepare without automations.yaml | Built-in schedule via `async_track_time_change`, re-armed on options change |
 | Preserve order while skipping | Included items keep original list order; skipped/failed simply omitted |
 | Published-today only, local tz | Each episode's UTC pubDate is converted to `hass.config.time_zone` before comparing dates |
 | Fresh data | Feeds are fetched over HTTP with no-cache headers at trigger time |
@@ -284,9 +322,14 @@ a one-tap catch-up button, create an `input_datetime` helper (e.g.
 - **No `daily_podcasts.*` services**: make sure you added the integration from
   **Settings → Devices & services → Add integration**. The services register
   once the config entry is set up. Check the logs for load errors.
-- **Nothing plays in the morning**: confirm "Run automatically each day" is on
-  and the run time is what you expect (Configure → Settings). The log shows
-  `Daily run scheduled for HH:MM:SS` when armed.
+- **"It didn't play this morning"**: that's by design — the daily schedule only
+  *prepares* the playlist (it never auto-plays). Press the **Play Daily
+  Podcasts** button, or call `daily_podcasts.build_queue`, to play. The log
+  shows `Daily run scheduled for HH:MM:SS` when the prepare is armed, and
+  `Prepared today's playlist ... not playing now (play=False)` after it prepares.
+- **The button records but doesn't play**: check the log line — if you see
+  `play=False`, the call passed `play: false`. The button should call
+  `build_queue` with no `play` (defaults to true) or `play: true`.
 - **`feedparser` errors on startup**: HA installs it from the manifest; watch
   the startup logs. A restart usually resolves a transient install.
 - **Timezone looks wrong**: this uses `hass.config.time_zone`. Set the
