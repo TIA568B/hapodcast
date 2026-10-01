@@ -75,8 +75,10 @@ HA `config/custom_components/` directory and restart. Home Assistant installs th
    now. This is **gap-proof**: whether you missed a day, a weekend, a holiday,
    or Home Assistant was down, the next run picks up exactly what you haven't
    been given yet — no weekday special-casing.
-   - **First run** (no mark yet): only today's episodes, so a fresh install
-     doesn't dump the back-catalogue.
+   - **First run** (no mark yet, e.g. a newly-added podcast): offers only that
+     podcast's **newest** episode within the look-back window, so adding a
+     podcast immediately gives you its latest episode without a backlog. After
+     that, normal "everything since" catch-up takes over.
    - **Max look-back** (default 18 days, Settings): caps how far back catch-up
      reaches, so a very old mark after a long outage can't queue a huge backlog.
    - **De-duplication:** episodes are tracked by their feed GUID, so an episode
@@ -331,7 +333,7 @@ ready-to-adapt example.
 | Never miss anything | Per-podcast high-water mark: each run includes everything published since the last successful prepare (gap-proof across missed days/outages) |
 | No duplicates | Mark advances only on recorded prepares; GUID de-dupe against recent history; replays/dry-runs don't advance it |
 | Bounded backlog | Max look-back (default 18 days) caps how far catch-up reaches |
-| First run is safe | No mark yet → today only, so a fresh install doesn't dump the back-catalogue |
+| Newly-added podcast is playable | First run (no mark) offers that podcast's newest recent episode, not a backlog; then catches up normally |
 | Per-podcast catch-up | Each podcast has a catch-up on/off flag (default on; off = today only), set from Add/Edit a podcast |
 | Resilient to feed outages | A feed that fails to fetch keeps its mark and retries next run |
 | Fresh data | Feeds are fetched over HTTP with no-cache headers at trigger time |

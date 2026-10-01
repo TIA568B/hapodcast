@@ -424,8 +424,10 @@ def _build_episode_list(
     whatever was missed since the last successful prepare, no matter how many
     days elapsed, with no weekday special-casing.
 
-    - First run (no HWM for a feed): the window starts at the beginning of today
-      (local), so a fresh install only offers today's episodes, not back-catalogue.
+    - First run (no HWM for a feed, e.g. a newly-added podcast): offers only the
+      podcast's *newest* episode within the look-back window, so adding a podcast
+      immediately gives you its latest episode without a backlog. The HWM is then
+      set and normal "everything since" catch-up takes over.
     - A ``max_lookback_days`` floor caps how far back the window can reach, so an
       ancient HWM (long outage) can't dump a huge backlog.
     - Catch-up OFF for a podcast: window is just *today* (local date), ignoring
@@ -443,9 +445,6 @@ def _build_episode_list(
     """
     now_utc = dt.datetime.now(dt.timezone.utc)
     today_local = dt.datetime.now(local_tz).date()
-    today_start_utc = dt.datetime.combine(
-        today_local, dt.time(0, 0), local_tz
-    ).astimezone(dt.timezone.utc)
     lookback_floor = now_utc - dt.timedelta(days=max(1, int(max_lookback_days)))
 
     included: list[dict] = []
@@ -476,21 +475,28 @@ def _build_episode_list(
             continue
 
         feed_hwm = _parse_iso(hwm.get(feed_url)) if catchup else None
+        first_run = catchup and feed_hwm is None
         if catchup:
             # Window lower bound: after the HWM, but no earlier than the
-            # lookback floor; first run (no HWM) starts at today's local start.
+            # lookback floor. First run (no HWM) considers the whole look-back
+            # window but is trimmed below to just the newest episode, so a
+            # freshly-added podcast immediately offers its latest episode
+            # without dumping a backlog.
             if feed_hwm is None:
-                lower = today_start_utc
+                lower = lookback_floor
             else:
                 lower = max(feed_hwm, lookback_floor)
-            window_desc = f"after {lower.isoformat()}"
+            window_desc = (
+                f"latest since {lower.isoformat()}"
+                if first_run
+                else f"after {lower.isoformat()}"
+            )
 
-            # Bind feed_hwm/lower as defaults so the closure captures *this*
+            # Bind lower/feed_hwm as defaults so the closure captures *this*
             # feed's values, not the loop variable (late-binding gotcha).
             def _in_window(pub, _lower=lower, _first=feed_hwm is None):
-                # First run (no HWM) is inclusive of today's start; otherwise
-                # strictly after the HWM so an already-marked episode isn't
-                # re-offered.
+                # First run is inclusive of the lookback floor; otherwise
+                # strictly after the HWM so a marked episode isn't re-offered.
                 return pub >= _lower if _first else pub > _lower
         else:
             # Catch-up off: just today's local date.
@@ -521,6 +527,13 @@ def _build_episode_list(
                 )
                 continue
             matched.append(ep)
+
+        # First run for a newly-added podcast: offer only its newest episode
+        # (feed_episodes/matched are oldest-first, so keep the last), so adding
+        # a podcast gives you its latest episode rather than a backlog. After
+        # this, the HWM is set and normal catch-up takes over.
+        if first_run and len(matched) > 1:
+            matched = matched[-1:]
 
         # Advance this feed's HWM to the newest in-window episode we saw (new or
         # de-duped). Catch-up-off feeds don't use the HWM, so leave theirs alone.
