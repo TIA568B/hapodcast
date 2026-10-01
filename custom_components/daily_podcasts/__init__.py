@@ -205,8 +205,14 @@ def _extract_audio_url(entry) -> str | None:
     return None
 
 
-def _parse_latest_episode(raw_bytes: bytes) -> dict[str, Any]:
-    """Parse the most recently published episode. Raises ValueError if none."""
+def _parse_feed_episodes(raw_bytes: bytes) -> list[dict[str, Any]]:
+    """Parse ALL usable episodes from a feed, each with its publish date.
+
+    Returns a list of {title, audio_url, published_dt (aware UTC)} for every
+    entry that has both a parseable publish date and an audio enclosure, sorted
+    oldest-first. Raises ValueError only if the feed itself is unusable (so a
+    single entry missing an enclosure doesn't sink the whole feed).
+    """
     import feedparser
 
     parsed = feedparser.parse(raw_bytes)
@@ -218,28 +224,34 @@ def _parse_latest_episode(raw_bytes: bytes) -> dict[str, Any]:
     if not parsed.entries:
         raise ValueError("feed contains no entries")
 
-    epoch = dt.datetime.min.replace(tzinfo=dt.timezone.utc)
-    latest = max(parsed.entries, key=lambda e: _entry_published_utc(e) or epoch)
+    episodes: list[dict[str, Any]] = []
+    for entry in parsed.entries:
+        published_dt = _entry_published_utc(entry)
+        if published_dt is None:
+            continue
+        audio_url = _extract_audio_url(entry)
+        if not audio_url:
+            continue
+        episodes.append(
+            {
+                "title": entry.get("title", "(untitled episode)"),
+                "audio_url": audio_url,
+                "published_dt": published_dt,
+            }
+        )
 
-    published_dt = _entry_published_utc(latest)
-    if published_dt is None:
-        raise ValueError("latest entry has no parseable publish date")
+    if not episodes:
+        raise ValueError("feed has no entries with a date and audio enclosure")
 
-    audio_url = _extract_audio_url(latest)
-    if not audio_url:
-        raise ValueError("latest entry has no audio enclosure")
-
-    return {
-        "title": latest.get("title", "(untitled episode)"),
-        "audio_url": audio_url,
-        "published_dt": published_dt,
-    }
+    # Oldest-first, so same-day episodes play in the order they were released.
+    episodes.sort(key=lambda e: e["published_dt"])
+    return episodes
 
 
-def _fetch_and_parse(feed_url: str, timeout: int) -> dict[str, Any]:
+def _fetch_and_parse(feed_url: str, timeout: int) -> list[dict[str, Any]]:
     """Blocking fetch + parse combined so it runs in one executor job."""
     raw = _fetch_feed_bytes(feed_url, timeout)
-    return _parse_latest_episode(raw)
+    return _parse_feed_episodes(raw)
 
 
 # ---------------------------------------------------------------------------
@@ -277,11 +289,38 @@ def _list_history_dates(base_dir: str) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
+def _eligible_dates(today: dt.date) -> set[dt.date]:
+    """Dates that count as "today" for inclusion.
+
+    Normally just `today`. On a Monday (weekday() == 0) the window also includes
+    the preceding Saturday and Sunday, so Monday's run picks up everything that
+    published over the weekend.
+    """
+    dates = {today}
+    if today.weekday() == 0:  # Monday
+        dates.add(today - dt.timedelta(days=1))  # Sunday
+        dates.add(today - dt.timedelta(days=2))  # Saturday
+    return dates
+
+
 def _build_episode_list(
     podcasts: list[dict[str, Any]], local_tz, fetch_timeout: int
 ) -> tuple[list[dict], list[dict], list[dict]]:
-    """Iterate the ordered podcast list, returning today's episodes in order."""
-    today_local = dt.datetime.now(local_tz).date()
+    """Return eligible episodes per feed, in listening order.
+
+    "Eligible" normally means published *today* (local tz). On a **Monday** the
+    window is widened to include the preceding Saturday and Sunday, so you catch
+    up on anything that published over the weekend. ALL eligible episodes from a
+    feed are included (not just the newest), ordered oldest-first within the
+    feed; feeds keep their configured list order.
+    """
+    eligible_dates = _eligible_dates(dt.datetime.now(local_tz).date())
+    window_desc = (
+        str(min(eligible_dates))
+        if len(eligible_dates) == 1
+        else f"{min(eligible_dates)}..{max(eligible_dates)}"
+    )
+
     included: list[dict] = []
     skipped: list[dict] = []
     errors: list[dict] = []
@@ -295,7 +334,7 @@ def _build_episode_list(
             continue
 
         try:
-            latest = _fetch_and_parse(feed_url, fetch_timeout)
+            feed_episodes = _fetch_and_parse(feed_url, fetch_timeout)
         except Exception as err:  # noqa: BLE001 - isolate per-feed failures
             errors.append({"name": name, "error": str(err)})
             _LOGGER.error(
@@ -306,13 +345,30 @@ def _build_episode_list(
             )
             continue
 
-        published_local_dt = latest["published_dt"].astimezone(local_tz)
-        if published_local_dt.date() == today_local:
+        # All episodes from this feed whose local publish date is in the window
+        # (feed_episodes is already oldest-first).
+        matched = []
+        for ep in feed_episodes:
+            published_local_dt = ep["published_dt"].astimezone(local_tz)
+            if published_local_dt.date() in eligible_dates:
+                matched.append((ep, published_local_dt))
+
+        if not matched:
+            skipped.append({"name": name})
+            _LOGGER.info(
+                "%s SKIP %r: no episode in window (%s).",
+                LOG_PREFIX,
+                name,
+                window_desc,
+            )
+            continue
+
+        for ep, published_local_dt in matched:
             included.append(
                 {
                     "name": name,
-                    "title": latest["title"],
-                    "audio_url": latest["audio_url"],
+                    "title": ep["title"],
+                    "audio_url": ep["audio_url"],
                     "published_local": published_local_dt.isoformat(),
                 }
             )
@@ -320,17 +376,15 @@ def _build_episode_list(
                 '%s INCLUDE %r: "%s" (published %s)',
                 LOG_PREFIX,
                 name,
-                latest["title"],
+                ep["title"],
                 published_local_dt.isoformat(),
             )
-        else:
-            skipped.append({"name": name})
+        if len(matched) > 1:
             _LOGGER.info(
-                "%s SKIP %r: latest episode from %s, not today (%s).",
+                "%s   (%d episodes from %r in window)",
                 LOG_PREFIX,
+                len(matched),
                 name,
-                published_local_dt.date(),
-                today_local,
             )
 
     return included, skipped, errors

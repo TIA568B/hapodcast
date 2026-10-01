@@ -63,9 +63,16 @@ HA `config/custom_components/` directory and restart. Home Assistant installs th
    "prepare only" mode (`build_queue` with `play: false`). It never plays.
 2. For each podcast in your list (in order), it fetches the RSS feed fresh over
    HTTP (cache-busting headers, so "published today" is decided on current
-   data), parses the newest episode's audio enclosure URL and publish date.
-3. It keeps only episodes whose publish date equals **today in your Home
-   Assistant timezone**, preserving your list order and dropping the rest.
+   data) and parses every episode's audio enclosure URL and publish date.
+3. It keeps **all** episodes whose publish date falls in the eligible window
+   (see below), in your Home Assistant timezone — so a feed that drops more than
+   one episode in a day contributes all of them (ordered oldest-first within
+   that feed). Feeds keep your configured list order; feeds with nothing in the
+   window are dropped.
+
+   **Eligible window:** normally just **today**. On a **Monday** the window also
+   includes the preceding **Saturday and Sunday**, so Monday picks up anything
+   that published over the weekend.
 4. It **records** that ordered playlist to a per-day file
    (`config/daily_podcasts_history/YYYY-MM-DD.json`).
 
@@ -303,7 +310,9 @@ ready-to-adapt example.
 | Edit the list, nothing else | The ordered podcast list is the one thing you edit, from Configure |
 | Daily prepare without automations.yaml | Built-in schedule via `async_track_time_change`, re-armed on options change |
 | Preserve order while skipping | Included items keep original list order; skipped/failed simply omitted |
+| All of a day's episodes | Every episode in the eligible window is included per feed (not just the newest), oldest-first within the feed |
 | Published-today only, local tz | Each episode's UTC pubDate is converted to `hass.config.time_zone` before comparing dates |
+| Monday catches up the weekend | On Mondays the eligible window is Sat + Sun + Mon; other days are just that day |
 | Fresh data | Feeds are fetched over HTTP with no-cache headers at trigger time |
 | Queue on Sonos in order | `mass.play_media` (one ordered list) when MA is present; else clear queue + first `enqueue: play` + rest `enqueue: add` so a real Sonos queue is built and advances |
 | Works without Music Assistant | Falls back to native `media_player` services on the chosen player |
