@@ -1,6 +1,6 @@
 /* Daily Podcasts full-screen Home Assistant sidebar panel. */
 
-const PANEL_VERSION = "1.9.1";
+const PANEL_VERSION = "1.9.2";
 
 class DailyPodcastsPanel extends HTMLElement {
   constructor() {
@@ -19,13 +19,26 @@ class DailyPodcastsPanel extends HTMLElement {
     this._overviewLoading = false;
     this._overviewStatus = "";
     this._refreshTimer = null;
+    this._started = false;
     this.attachShadow({ mode: "open" });
   }
 
   set hass(value) {
     this._hass = value;
-    if (!this._loaded && this._tab === "management") this._load();
+    // HA assigns `hass` on every state change in the system. Our rendered
+    // content comes from service responses (this._overview) and this._rows,
+    // not from live hass state, so do NOT re-render here -- doing so would
+    // rebuild the DOM mid-typing and steal input focus. Just start once.
+    this._ensureStarted();
+  }
+
+  _ensureStarted() {
+    // Render + load the active tab exactly once, when both the element is
+    // connected and hass is available (either order of arrival).
+    if (this._started || !this._hass || !this.isConnected) return;
+    this._started = true;
     this._render();
+    this._onTabEnter(this._tab);
   }
 
   get hass() {
@@ -56,12 +69,15 @@ class DailyPodcastsPanel extends HTMLElement {
         this.addEventListener(type, this._keyGuard);
       }
     }
+    // Render immediately so the panel isn't blank before hass arrives; the
+    // one-time tab load happens in _ensureStarted once hass is available.
     this._render();
-    if (this._hass) this._onTabEnter(this._tab);
+    this._ensureStarted();
   }
 
   disconnectedCallback() {
     this._stopRefresh();
+    this._started = false;
     if (this._keyGuard) {
       for (const type of ["keydown", "keyup", "keypress"]) {
         this.removeEventListener(type, this._keyGuard);
@@ -172,8 +188,11 @@ class DailyPodcastsPanel extends HTMLElement {
   }
 
   _update(index, key, value) {
+    // Update the backing model only. Do NOT re-render: the <input>/<checkbox>
+    // already shows the user's value in the live DOM, and rebuilding the DOM
+    // here would destroy the focused field (losing focus and cursor position)
+    // on every keystroke. Structural changes (add/remove/move/save) re-render.
     this._rows[index] = { ...this._rows[index], [key]: value };
-    this._render();
   }
 
   _add() {
