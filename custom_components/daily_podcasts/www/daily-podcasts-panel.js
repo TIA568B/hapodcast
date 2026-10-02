@@ -1,6 +1,6 @@
 /* Daily Podcasts full-screen Home Assistant sidebar panel. */
 
-const PANEL_VERSION = "1.9.0";
+const PANEL_VERSION = "1.9.1";
 
 class DailyPodcastsPanel extends HTMLElement {
   constructor() {
@@ -40,12 +40,33 @@ class DailyPodcastsPanel extends HTMLElement {
   set route(_value) {}
 
   connectedCallback() {
+    // Home Assistant registers global keyboard shortcuts (quick bar, etc.) on
+    // document. Key events from our inputs bubble out of the shadow root and
+    // trigger those shortcuts while typing. Stop keyboard events that originate
+    // from a text field from leaving the panel so typing never fires a hotkey.
+    if (!this._keyGuard) {
+      this._keyGuard = (event) => {
+        const target = event.composedPath ? event.composedPath()[0] : event.target;
+        const tag = target && target.tagName ? target.tagName.toLowerCase() : "";
+        if (tag === "input" || tag === "textarea" || (target && target.isContentEditable)) {
+          event.stopPropagation();
+        }
+      };
+      for (const type of ["keydown", "keyup", "keypress"]) {
+        this.addEventListener(type, this._keyGuard);
+      }
+    }
     this._render();
     if (this._hass) this._onTabEnter(this._tab);
   }
 
   disconnectedCallback() {
     this._stopRefresh();
+    if (this._keyGuard) {
+      for (const type of ["keydown", "keyup", "keypress"]) {
+        this.removeEventListener(type, this._keyGuard);
+      }
+    }
   }
 
   // --- Tabs ------------------------------------------------------------
