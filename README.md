@@ -208,6 +208,13 @@ The panel uses the same backend services that are available for automations:
 `daily_podcasts.get_queue`, `daily_podcasts.skip_to`, and
 `daily_podcasts.remove_from_queue`.
 
+> **Use the native Sonos `media_player` entity.** The live queue, Skip, and
+> Remove controls use the Sonos integration's own queue actions, which only
+> work on the native Sonos entity for a speaker (e.g. `media_player.office`).
+> If the configured player is a different entity for the same speaker — for
+> example a Music Assistant player — the Overview tab can't read or control the
+> queue and will say so. Set the player to the Sonos entity in **Configure**.
+
 ### Settings — the Configure screen
 
 **Settings → Devices & services → Daily Podcast Queue → Configure** holds the

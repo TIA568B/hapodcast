@@ -1226,7 +1226,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         return nxt.isoformat()
 
     async def _sonos_queue_ids(player: str) -> list[str] | None:
-        """Return queue media_content_ids via sonos.get_queue, or None."""
+        """Return the live Sonos queue's media_content_ids, or None.
+
+        None means the queue could not be read as a Sonos queue -- either the
+        Sonos integration isn't present, the call failed, or the configured
+        player is not a native Sonos entity (e.g. a Music Assistant entity for
+        the same speaker). An empty list means a Sonos entity with an empty
+        queue. The caller uses this distinction to avoid showing a stale
+        history fallback as if it were the live queue.
+        """
         if not hass.services.has_service("sonos", "get_queue"):
             return None
         try:
@@ -1238,22 +1246,29 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 return_response=True,
             )
         except Exception as err:  # noqa: BLE001
+            # A wrong (non-Sonos) entity raises here -- treat as "not a Sonos
+            # queue" rather than an error.
             _LOGGER.debug(
                 "%s sonos.get_queue failed on %s (%s).", LOG_PREFIX, player, err
             )
             return None
-        items = (resp or {}).get(player) or []
+        # sonos.get_queue returns a dict keyed by entity_id. If our player key
+        # is absent, this isn't a Sonos entity we can drive.
+        if not isinstance(resp, dict) or player not in resp:
+            return None
+        items = resp.get(player) or []
         return [item.get("media_content_id", "") for item in items]
 
     async def handle_get_queue(call: ServiceCall) -> dict[str, Any]:
         """Return now-playing + the live queue for the Overview panel.
 
-        Queue items are mapped back to podcast names/titles using today's (and,
-        as a fallback, the most recent) recorded history, matched by audio URL.
+        The queue reflects the live Sonos queue only. Items are mapped back to
+        podcast names/titles using recent recorded history, matched by audio
+        URL. queue_source reports whether the queue is live, empty, or could
+        not be read (e.g. the player isn't a controllable Sonos entity).
         """
         cfg = _entry_config(hass)
         player = call.data.get(ATTR_PLAYER) or cfg.get(CONF_PLAYER)
-        local_tz = _resolve_local_tz(hass, cfg.get(CONF_TIMEZONE))
 
         # Build an audio_url -> {name, title} map from recent history so queue
         # items (bare MP3 URLs) can show which podcast they are.
@@ -1295,36 +1310,50 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 "queue_size": attrs.get("queue_size"),
             }
 
-            # Prefer the real Sonos queue; fall back to today's recorded
-            # playlist so non-Sonos players still show something sensible.
+            # Read ONLY the live Sonos queue. Do not substitute recorded
+            # history: showing yesterday's playlist as if it were the live
+            # queue makes Skip/Remove operate on positions that don't exist,
+            # which is exactly the "nothing happens" confusion we want to
+            # avoid. ids is None when the player isn't a controllable Sonos
+            # entity (e.g. a Music Assistant entity for the same speaker).
             ids = await _sonos_queue_ids(player)
             if ids is None:
-                today_str = dt.datetime.now(local_tz).strftime(DATE_FMT)
-                eps = await _load_history_episodes(today_str)
-                ids = [ep.get("audio_url", "") for ep in eps]
+                queue_source = "unavailable"
+            elif not ids:
+                queue_source = "empty"
+            else:
+                queue_source = "live"
+                for idx, url in enumerate(ids):
+                    meta = url_map.get(url, {})
+                    queue.append(
+                        {
+                            "position": idx,  # 0-based (matches play_queue)
+                            "podcast": meta.get("name", ""),
+                            "title": meta.get("title", ""),
+                            "media_content_id": url,
+                            "current": bool(url) and url == current_id,
+                        }
+                    )
+        else:
+            queue_source = "no_player"
 
-            for idx, url in enumerate(ids):
-                meta = url_map.get(url, {})
-                queue.append(
-                    {
-                        "position": idx,  # 0-based (matches sonos.play_queue)
-                        "podcast": meta.get("name", ""),
-                        "title": meta.get("title", ""),
-                        "media_content_id": url,
-                        "current": bool(url) and url == current_id,
-                    }
-                )
+        # Skip/Remove only make sense against a live Sonos queue.
+        is_sonos = queue_source in ("live", "empty")
 
         return {
             "player": player,
             "now_playing": now_playing,
             "queue": queue,
+            "queue_source": queue_source,
+            "is_sonos": is_sonos,
             "next_prepare": _next_prepare_iso(),
             "enabled": bool(cfg.get(CONF_ENABLED, DEFAULT_ENABLED)),
             "at": str(cfg.get(CONF_AT, DEFAULT_AT)),
             "podcast_count": len(cfg.get(CONF_PODCASTS) or []),
-            "can_skip": hass.services.has_service("sonos", "play_queue"),
-            "can_remove": hass.services.has_service(
+            "can_skip": is_sonos
+            and hass.services.has_service("sonos", "play_queue"),
+            "can_remove": is_sonos
+            and hass.services.has_service(
                 "sonos", "remove_from_queue"
             ),
         }

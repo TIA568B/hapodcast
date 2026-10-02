@@ -1,6 +1,6 @@
 /* Daily Podcasts full-screen Home Assistant sidebar panel. */
 
-const PANEL_VERSION = "1.10.0";
+const PANEL_VERSION = "1.10.1";
 
 // Prevent keystrokes typed into a form field from reaching Home Assistant's
 // global keyboard shortcuts (e.g. "c" quick-bar, "e", "a"). HA registers its
@@ -498,7 +498,7 @@ class DailyPodcastsPanel extends HTMLElement {
     addInfo("Next prepare", ov.enabled ? (this._fmtWhen(ov.next_prepare) || "—") : "—");
     addInfo("Prepare time", ov.at || "—");
     addInfo("Podcasts", String(ov.podcast_count ?? "—"));
-    if (ov.queue) addInfo("Queue length", String(ov.queue.length));
+    if (ov.queue_source === "live") addInfo("Queue length", String((ov.queue || []).length));
     page.appendChild(infoCard);
 
     // Queue list
@@ -509,21 +509,28 @@ class DailyPodcastsPanel extends HTMLElement {
     page.appendChild(toolbar);
 
     const queue = ov.queue || [];
+    const source = ov.queue_source;
     const list = document.createElement("section"); list.className = "list";
-    if (!queue.length) {
+
+    if (source === "live") {
+      queue.forEach((item) => list.appendChild(this._renderQueueRow(item, ov.can_skip, ov.can_remove)));
+    } else if (source === "empty") {
       const empty = document.createElement("div"); empty.className = "empty";
       empty.textContent = "The queue is empty. Press the Play Daily Podcasts button to build today's queue.";
       list.appendChild(empty);
+    } else if (source === "no_player") {
+      const empty = document.createElement("div"); empty.className = "empty";
+      empty.textContent = "No player is configured. Set one in the integration's Configure screen.";
+      list.appendChild(empty);
     } else {
-      queue.forEach((item) => list.appendChild(this._renderQueueRow(item, ov.can_skip, ov.can_remove)));
+      // "unavailable": the configured player isn't a controllable Sonos queue.
+      const empty = document.createElement("div"); empty.className = "empty";
+      empty.textContent =
+        "Live queue unavailable. The configured player isn't a native Sonos entity, so the queue can't be read or controlled here. Set the player to your Sonos media_player (e.g. media_player.office) in Settings → Devices & services → Daily Podcast Queue → Configure.";
+      list.appendChild(empty);
     }
     page.appendChild(list);
 
-    if (!ov.can_skip || !ov.can_remove) {
-      const hint = document.createElement("div"); hint.className = "hint";
-      hint.textContent = "Skip to Podcast and Remove require the Sonos integration. This player does not support them.";
-      page.appendChild(hint);
-    }
     if (this._overviewStatus) {
       const status = document.createElement("div"); status.className = "status"; status.textContent = this._overviewStatus; page.appendChild(status);
     }
