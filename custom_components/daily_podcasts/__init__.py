@@ -844,17 +844,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         for index, media_id in enumerate(media_ids):
             enqueue = "play" if index == 0 else "add"
-            await hass.services.async_call(
-                "media_player",
-                "play_media",
-                {
-                    "entity_id": player,
-                    "media_content_id": media_id,
-                    "media_content_type": "music",
-                    "enqueue": enqueue,
-                },
-                blocking=True,
-            )
+            try:
+                await hass.services.async_call(
+                    "media_player",
+                    "play_media",
+                    {
+                        "entity_id": player,
+                        "media_content_id": media_id,
+                        "media_content_type": "music",
+                        "enqueue": enqueue,
+                    },
+                    blocking=True,
+                )
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.error(
+                    "%s Failed to queue episode #%d on %s (%s).",
+                    LOG_PREFIX,
+                    index + 1,
+                    player,
+                    err,
+                )
+                raise
             # Give Sonos a moment to establish the queue after the first item
             # before appending the rest, so the appends land reliably.
             if index == 0 and len(media_ids) > 1:
@@ -960,7 +970,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         today_str = dt.datetime.now(local_tz).strftime(DATE_FMT)
 
-        if not dry_run:
+        async def _commit_build() -> None:
+            """Record a successfully prepared/played build and advance HWM."""
+            if dry_run:
+                return
+
             # Record only the episodes we're actually offering (merged into the
             # day's history).
             if included:
@@ -975,6 +989,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 await _async_save_hwm()
 
         if not included:
+            # Even with no queueable episodes, new_hwm may contain timestamps for
+            # episodes already present in recent history. Preserve those HWM
+            # updates so they are not reconsidered on every run.
+            await _commit_build()
             _LOGGER.info(
                 "%s Nothing new since last run; nothing recorded or played.",
                 LOG_PREFIX,
@@ -989,6 +1007,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
 
         if not play:
+            # The scheduled prepare path intentionally commits without
+            # playback. A manual play path commits only after queueing succeeds.
+            await _commit_build()
             _LOGGER.info(
                 "%s Prepared the playlist and recorded it to history; not "
                 "playing now (play=False). Use the service/button to play.",
@@ -996,7 +1017,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             )
             return
 
+        # Do not record or advance HWM until playback has been queued
+        # successfully. If Sonos fails, the same episodes remain retryable.
         await _async_queue_media(player, included, dry_run)
+        await _commit_build()
 
     # --- Service: build_queue --------------------------------------------
     async def handle_build_queue(call: ServiceCall) -> None:
