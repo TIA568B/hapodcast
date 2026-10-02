@@ -34,6 +34,7 @@ import voluptuous as vol
 
 from homeassistant.config_entries import ConfigEntry, SOURCE_IMPORT
 from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.event import async_track_time_change
 from homeassistant.helpers.storage import Store
@@ -823,8 +824,39 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             )
             return
 
-        # Native fallback (e.g. the Sonos integration). Clear the queue first,
-        # then build a real queue: first item "play", rest "add".
+        # Native fallback (e.g. the Sonos integration). Before touching the
+        # queue, confirm the target entity exists and can actually enqueue
+        # media. A common misconfiguration is pointing at the wrong entity for
+        # a speaker -- e.g. the Alexa Media Player entity for a Sonos, which
+        # accepts a bare play_media but cannot build a queue and fails with an
+        # opaque "music is not available as a music provider" error. Catching
+        # that here produces an actionable message instead.
+        #
+        # MediaPlayerEntityFeature.MEDIA_ENQUEUE == 2097152. Using the raw bit
+        # avoids importing the media_player component just for one flag.
+        MEDIA_ENQUEUE_FEATURE = 2097152
+
+        state = hass.states.get(player)
+        if state is None:
+            raise HomeAssistantError(
+                f"{LOG_PREFIX} Player '{player}' not found. Set a valid "
+                "media_player in the Daily Podcast Queue options (Settings -> "
+                "Devices & services -> Daily Podcast Queue -> Configure)."
+            )
+
+        features = state.attributes.get("supported_features", 0) or 0
+        if not features & MEDIA_ENQUEUE_FEATURE:
+            raise HomeAssistantError(
+                f"{LOG_PREFIX} Player '{player}' does not support queueing "
+                "(MEDIA_ENQUEUE). This usually means it is the wrong entity "
+                "for the speaker -- e.g. an Alexa Media Player entity for a "
+                "Sonos. Point the integration at the speaker's Sonos-native "
+                "media_player entity instead, in Settings -> Devices & "
+                "services -> Daily Podcast Queue -> Configure."
+            )
+
+        # Clear the queue first, then build a real queue: first item "play",
+        # rest "add".
         import asyncio
 
         try:
