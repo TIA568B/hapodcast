@@ -1,6 +1,21 @@
 /* Daily Podcasts full-screen Home Assistant sidebar panel. */
 
-const PANEL_VERSION = "1.9.2";
+const PANEL_VERSION = "1.9.3";
+
+// Prevent keystrokes typed into a form field from reaching Home Assistant's
+// global keyboard shortcuts (e.g. "c" quick-bar, "e", "a"). HA registers its
+// shortcut listener on `window` (and may listen in the capture phase), so a
+// plain bubble-phase stopPropagation can be too late. We attach to the input
+// itself in BOTH capture and bubble phases and use stopImmediatePropagation so
+// the event never reaches HA regardless of the phase HA listens in. We do NOT
+// preventDefault, so the keystroke still lands in the field as normal text.
+function stopKeyboardPropagation(el) {
+  const swallow = (e) => e.stopImmediatePropagation();
+  for (const type of ["keydown", "keyup", "keypress"]) {
+    el.addEventListener(type, swallow, { capture: true });
+    el.addEventListener(type, swallow);
+  }
+}
 
 class DailyPodcastsPanel extends HTMLElement {
   constructor() {
@@ -25,16 +40,15 @@ class DailyPodcastsPanel extends HTMLElement {
 
   set hass(value) {
     this._hass = value;
-    // HA assigns `hass` on every state change in the system. Our rendered
-    // content comes from service responses (this._overview) and this._rows,
-    // not from live hass state, so do NOT re-render here -- doing so would
-    // rebuild the DOM mid-typing and steal input focus. Just start once.
+    // HA assigns `hass` on every state change in the system. Kick off the
+    // first render + active-tab load once hass is available; subsequent hass
+    // updates do NOT force a re-render (our content comes from service
+    // responses, not live hass state). _render also preserves input
+    // focus/value/caret across any rebuild as a belt-and-braces guard.
     this._ensureStarted();
   }
 
   _ensureStarted() {
-    // Render + load the active tab exactly once, when both the element is
-    // connected and hass is available (either order of arrival).
     if (this._started || !this._hass || !this.isConnected) return;
     this._started = true;
     this._render();
@@ -53,24 +67,9 @@ class DailyPodcastsPanel extends HTMLElement {
   set route(_value) {}
 
   connectedCallback() {
-    // Home Assistant registers global keyboard shortcuts (quick bar, etc.) on
-    // document. Key events from our inputs bubble out of the shadow root and
-    // trigger those shortcuts while typing. Stop keyboard events that originate
-    // from a text field from leaving the panel so typing never fires a hotkey.
-    if (!this._keyGuard) {
-      this._keyGuard = (event) => {
-        const target = event.composedPath ? event.composedPath()[0] : event.target;
-        const tag = target && target.tagName ? target.tagName.toLowerCase() : "";
-        if (tag === "input" || tag === "textarea" || (target && target.isContentEditable)) {
-          event.stopPropagation();
-        }
-      };
-      for (const type of ["keydown", "keyup", "keypress"]) {
-        this.addEventListener(type, this._keyGuard);
-      }
-    }
     // Render immediately so the panel isn't blank before hass arrives; the
     // one-time tab load happens in _ensureStarted once hass is available.
+    // Per-input key swallowing (stopKeyboardPropagation) handles HA hotkeys.
     this._render();
     this._ensureStarted();
   }
@@ -78,11 +77,6 @@ class DailyPodcastsPanel extends HTMLElement {
   disconnectedCallback() {
     this._stopRefresh();
     this._started = false;
-    if (this._keyGuard) {
-      for (const type of ["keydown", "keyup", "keypress"]) {
-        this.removeEventListener(type, this._keyGuard);
-      }
-    }
   }
 
   // --- Tabs ------------------------------------------------------------
@@ -314,6 +308,22 @@ class DailyPodcastsPanel extends HTMLElement {
   // --- Render ----------------------------------------------------------
   _render() {
     if (!this.shadowRoot) return;
+
+    // Preserve input focus + caret across the full DOM rebuild. _render
+    // replaces the entire shadow tree, which would otherwise destroy the
+    // focused <input>, drop the caret, and (on mobile) dismiss the keyboard.
+    // Fields are tagged with data-field="<key>:<index>" so we can find the
+    // same one again after the rebuild. Captured here, restored at the end.
+    let savedFocus = null;
+    const active = this.shadowRoot.activeElement;
+    if (active && active.dataset && active.dataset.field) {
+      savedFocus = {
+        field: active.dataset.field,
+        start: active.selectionStart,
+        end: active.selectionEnd,
+      };
+    }
+
     this.shadowRoot.innerHTML = `
       <style>
         :host { display:block; min-height:100%; background:var(--primary-background-color); color:var(--primary-text-color); }
@@ -392,6 +402,24 @@ class DailyPodcastsPanel extends HTMLElement {
     }
 
     this.shadowRoot.appendChild(page);
+
+    // Restore focus + caret to the field the user was editing before rebuild.
+    if (savedFocus) {
+      const el = this.shadowRoot.querySelector(
+        `[data-field="${savedFocus.field}"]`
+      );
+      if (el) {
+        el.focus();
+        if (savedFocus.start != null) {
+          try {
+            el.setSelectionRange(savedFocus.start, savedFocus.end);
+          } catch (_err) {
+            // setSelectionRange throws for some input types (e.g. url in some
+            // browsers); caret restore is best-effort.
+          }
+        }
+      }
+    }
   }
 
   _renderOverview(page) {
@@ -542,8 +570,8 @@ class DailyPodcastsPanel extends HTMLElement {
     const order=document.createElement("div"); order.className="order";
     order.append(this._button("▲","icon",()=>this._move(index,-1),index===0), this._button("▼","icon",()=>this._move(index,1),index===this._rows.length-1));
     const fields=document.createElement("div"); fields.className="fields";
-    const name=document.createElement("input"); name.type="text"; name.value=row.name||""; name.placeholder="Podcast name"; name.addEventListener("input",(e)=>this._update(index,"name",e.target.value));
-    const url=document.createElement("input"); url.type="url"; url.value=row.feed_url||""; url.placeholder="https://feed.url/rss"; url.addEventListener("input",(e)=>this._update(index,"feed_url",e.target.value));
+    const name=document.createElement("input"); name.type="text"; name.dataset.field=`name:${index}`; name.value=row.name||""; name.placeholder="Podcast name"; name.addEventListener("input",(e)=>this._update(index,"name",e.target.value)); stopKeyboardPropagation(name);
+    const url=document.createElement("input"); url.type="url"; url.dataset.field=`feed_url:${index}`; url.value=row.feed_url||""; url.placeholder="https://feed.url/rss"; url.addEventListener("input",(e)=>this._update(index,"feed_url",e.target.value)); stopKeyboardPropagation(url);
     fields.append(name,url);
     const label=document.createElement("label"); label.className="catchup"; const check=document.createElement("input"); check.type="checkbox"; check.checked=row.catchup!==false; check.addEventListener("change",(e)=>this._update(index,"catchup",e.target.checked)); label.append(check,document.createTextNode("Catch-up"));
     const remove=this._button("✕","icon delete",()=>this._remove(index)); remove.title="Remove podcast";
