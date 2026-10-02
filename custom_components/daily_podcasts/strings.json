@@ -46,6 +46,10 @@
     "skip_to": {
       "name": "Skip to a queue position",
       "description": "Jump playback to a 0-based position in the current queue (Sonos)."
+    },
+    "remove_from_queue": {
+      "name": "Remove an item from the queue",
+      "description": "Remove a single item at a 0-based position from the current queue (Sonos)."
     }
   }
 }

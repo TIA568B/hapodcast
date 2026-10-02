@@ -80,6 +80,7 @@ from .const import (
     SERVICE_GET_QUEUE,
     SERVICE_LIST_PODCASTS,
     SERVICE_PLAY_HISTORY,
+    SERVICE_REMOVE_FROM_QUEUE,
     SERVICE_SET_PODCASTS,
     SERVICE_SKIP_TO,
 )
@@ -158,6 +159,13 @@ GET_QUEUE_SCHEMA = vol.Schema(
 )
 
 SKIP_TO_SCHEMA = vol.Schema(
+    {
+        vol.Optional(ATTR_PLAYER): cv.entity_id,
+        vol.Required(ATTR_POSITION): vol.All(int, vol.Range(min=0)),
+    }
+)
+
+REMOVE_FROM_QUEUE_SCHEMA = vol.Schema(
     {
         vol.Optional(ATTR_PLAYER): cv.entity_id,
         vol.Required(ATTR_POSITION): vol.All(int, vol.Range(min=0)),
@@ -1316,6 +1324,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             "at": str(cfg.get(CONF_AT, DEFAULT_AT)),
             "podcast_count": len(cfg.get(CONF_PODCASTS) or []),
             "can_skip": hass.services.has_service("sonos", "play_queue"),
+            "can_remove": hass.services.has_service(
+                "sonos", "remove_from_queue"
+            ),
         }
 
     async def handle_skip_to(call: ServiceCall) -> None:
@@ -1345,6 +1356,33 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             position,
         )
 
+    async def handle_remove_from_queue(call: ServiceCall) -> None:
+        """Remove one item at a 0-based queue position (Sonos)."""
+        cfg = _entry_config(hass)
+        player = call.data.get(ATTR_PLAYER) or cfg.get(CONF_PLAYER)
+        position = int(call.data.get(ATTR_POSITION, 0))
+        if position < 0:
+            position = 0
+
+        if not hass.services.has_service("sonos", "remove_from_queue"):
+            raise HomeAssistantError(
+                f"{LOG_PREFIX} Removing a queue item requires the Sonos "
+                f"integration (sonos.remove_from_queue); player '{player}' "
+                "does not support it."
+            )
+        await hass.services.async_call(
+            "sonos",
+            "remove_from_queue",
+            {"entity_id": player, "queue_position": position},
+            blocking=True,
+        )
+        _LOGGER.info(
+            "%s remove_from_queue: removed position %d from %s.",
+            LOG_PREFIX,
+            position,
+            player,
+        )
+
     # Register services once (they read the live entry config each call).
     if not hass.services.has_service(DOMAIN, SERVICE_BUILD_QUEUE):
         hass.services.async_register(
@@ -1368,6 +1406,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if not hass.services.has_service(DOMAIN, SERVICE_SKIP_TO):
         hass.services.async_register(
             DOMAIN, SERVICE_SKIP_TO, handle_skip_to, schema=SKIP_TO_SCHEMA
+        )
+    if not hass.services.has_service(DOMAIN, SERVICE_REMOVE_FROM_QUEUE):
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_REMOVE_FROM_QUEUE,
+            handle_remove_from_queue,
+            schema=REMOVE_FROM_QUEUE_SCHEMA,
         )
 
     # --- Daily scheduler (internal; no automations.yaml needed) ----------

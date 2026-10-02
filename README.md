@@ -196,15 +196,17 @@ The panel has two tabs:
   play queue, and at-a-glance info: whether automatic daily prepare is on, the
   **next scheduled prepare time**, the prepare time of day, and your podcast
   count. Each queued item shows its podcast and episode title, with the current
-  item highlighted. A **Skip to Podcast** button on each item jumps playback
-  straight to it. (Skip uses `sonos.play_queue`, so it needs the Sonos
-  integration; on other players the button is disabled.)
+  item highlighted. Each item has a **Skip to Podcast** button that jumps
+  playback straight to it, and a **✕** that removes just that item from the
+  queue. (Both use the Sonos integration — `sonos.play_queue` and
+  `sonos.remove_from_queue` — so on other players these controls are disabled.)
 - **Management** — add, remove, edit, and drag-reorder podcasts (and toggle each
   one's catch-up) on a single screen, then save the whole list atomically.
 
 The panel uses the same backend services that are available for automations:
 `daily_podcasts.list_podcasts`, `daily_podcasts.set_podcasts`,
-`daily_podcasts.get_queue`, and `daily_podcasts.skip_to`.
+`daily_podcasts.get_queue`, `daily_podcasts.skip_to`, and
+`daily_podcasts.remove_from_queue`.
 
 ### Settings — the Configure screen
 

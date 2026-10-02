@@ -1,6 +1,6 @@
 /* Daily Podcasts full-screen Home Assistant sidebar panel. */
 
-const PANEL_VERSION = "1.9.3";
+const PANEL_VERSION = "1.10.0";
 
 // Prevent keystrokes typed into a form field from reaching Home Assistant's
 // global keyboard shortcuts (e.g. "c" quick-bar, "e", "a"). HA registers its
@@ -148,6 +148,22 @@ class DailyPodcastsPanel extends HTMLElement {
       window.setTimeout(() => this._loadOverview(true), 1200);
     } catch (error) {
       this._overviewStatus = `Skip failed: ${error.message || error}`;
+      this._render();
+    }
+  }
+
+  async _removeFromQueue(position, label) {
+    if (!this._hass) return;
+    const name = label || "this item";
+    if (!window.confirm(`Remove ${name} from the queue?`)) return;
+    try {
+      await this._hass.callService("daily_podcasts", "remove_from_queue", {
+        position,
+      });
+      // Give Sonos a moment to re-index the queue, then refresh.
+      window.setTimeout(() => this._loadOverview(true), 1200);
+    } catch (error) {
+      this._overviewStatus = `Remove failed: ${error.message || error}`;
       this._render();
     }
   }
@@ -371,6 +387,7 @@ class DailyPodcastsPanel extends HTMLElement {
         .qmeta { flex:1; min-width:0; }
         .qmeta .pod { font-size:13px; color:var(--secondary-text-color); }
         .qmeta .ttl { font-size:15px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .qactions { display:flex; align-items:center; gap:8px; white-space:nowrap; }
         .nowtag { font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--primary-color); font-weight:600; }
         @media (max-width:700px) { .page { padding:20px 16px 36px; } .fields { flex-direction:column; } .catchup { font-size:12px; } }
       </style>
@@ -498,13 +515,13 @@ class DailyPodcastsPanel extends HTMLElement {
       empty.textContent = "The queue is empty. Press the Play Daily Podcasts button to build today's queue.";
       list.appendChild(empty);
     } else {
-      queue.forEach((item) => list.appendChild(this._renderQueueRow(item, ov.can_skip)));
+      queue.forEach((item) => list.appendChild(this._renderQueueRow(item, ov.can_skip, ov.can_remove)));
     }
     page.appendChild(list);
 
-    if (!ov.can_skip) {
+    if (!ov.can_skip || !ov.can_remove) {
       const hint = document.createElement("div"); hint.className = "hint";
-      hint.textContent = "Skip to Podcast requires the Sonos integration (sonos.play_queue). This player does not support it.";
+      hint.textContent = "Skip to Podcast and Remove require the Sonos integration. This player does not support them.";
       page.appendChild(hint);
     }
     if (this._overviewStatus) {
@@ -512,7 +529,7 @@ class DailyPodcastsPanel extends HTMLElement {
     }
   }
 
-  _renderQueueRow(item, canSkip) {
+  _renderQueueRow(item, canSkip, canRemove) {
     const el = document.createElement("div");
     el.className = `qrow${item.current ? " current" : ""}`;
     const num = document.createElement("div"); num.className = "qnum"; num.textContent = String((item.position ?? 0) + 1); el.appendChild(num);
@@ -520,13 +537,22 @@ class DailyPodcastsPanel extends HTMLElement {
     if (item.podcast) { const pod = document.createElement("div"); pod.className = "pod"; pod.textContent = item.podcast; meta.appendChild(pod); }
     const ttl = document.createElement("div"); ttl.className = "ttl"; ttl.textContent = item.title || item.media_content_id || "(unknown)"; ttl.title = ttl.textContent; meta.appendChild(ttl);
     el.appendChild(meta);
+
+    const actions = document.createElement("div"); actions.className = "qactions";
     if (item.current) {
-      const tag = document.createElement("span"); tag.className = "nowtag"; tag.textContent = "Playing"; el.appendChild(tag);
+      const tag = document.createElement("span"); tag.className = "nowtag"; tag.textContent = "Playing"; actions.appendChild(tag);
     } else {
       const skip = this._button("Skip to Podcast", "button", () => this._skipTo(item.position), !canSkip);
       if (!canSkip) skip.title = "Requires the Sonos integration";
-      el.appendChild(skip);
+      actions.appendChild(skip);
     }
+    // Allow removing any item (including the current one) from the queue.
+    const label = item.title || item.podcast || "this item";
+    const remove = this._button("✕", "icon delete", () => this._removeFromQueue(item.position, label), !canRemove);
+    remove.title = canRemove ? "Remove from queue" : "Requires the Sonos integration";
+    actions.appendChild(remove);
+
+    el.appendChild(actions);
     return el;
   }
 

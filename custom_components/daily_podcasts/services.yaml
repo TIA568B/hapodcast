@@ -140,6 +140,31 @@ skip_to:
           max: 500
           mode: box
 
+remove_from_queue:
+  name: Remove an item from the queue
+  description: >
+    Remove a single item at a 0-based position from the current queue. Requires
+    the Sonos integration (uses sonos.remove_from_queue).
+  fields:
+    player:
+      name: Player
+      description: media_player to control. Defaults to the configured player.
+      required: false
+      example: media_player.office
+      selector:
+        entity:
+          domain: media_player
+    position:
+      name: Queue position
+      description: 0-based index of the queue item to remove (the first item is 0).
+      required: true
+      example: 2
+      selector:
+        number:
+          min: 0
+          max: 500
+          mode: box
+
 list_podcasts:
   name: List podcasts
   description: >

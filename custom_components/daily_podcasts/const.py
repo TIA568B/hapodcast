@@ -56,6 +56,7 @@ SERVICE_PLAY_HISTORY = "play_history"
 # Overview panel services.
 SERVICE_GET_QUEUE = "get_queue"
 SERVICE_SKIP_TO = "skip_to"
+SERVICE_REMOVE_FROM_QUEUE = "remove_from_queue"
 
 # Service call fields
 ATTR_PLAYER = "player"
