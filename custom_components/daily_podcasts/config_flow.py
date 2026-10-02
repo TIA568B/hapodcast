@@ -1,4 +1,9 @@
-"""Config + options flow for Daily Podcast Queue (fully UI-managed)."""
+"""Config + options flow for Daily Podcast Queue (fully UI-managed).
+
+The podcast list (add / edit / remove / reorder / per-podcast catch-up) is
+managed from the "Daily Podcasts" sidebar panel. This options flow only covers
+the integration-wide settings: player, daily prepare time, and so on.
+"""
 
 from __future__ import annotations
 
@@ -13,7 +18,6 @@ from homeassistant.config_entries import (
     OptionsFlowWithReload,
 )
 from homeassistant.core import callback
-from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.selector import (
     BooleanSelector,
     EntitySelector,
@@ -21,9 +25,6 @@ from homeassistant.helpers.selector import (
     NumberSelector,
     NumberSelectorConfig,
     NumberSelectorMode,
-    SelectSelector,
-    SelectSelectorConfig,
-    SelectSelectorMode,
     TextSelector,
     TextSelectorConfig,
     TextSelectorType,
@@ -46,13 +47,7 @@ from .const import (
     DEFAULT_ENABLED,
     DEFAULT_MAX_LOOKBACK_DAYS,
     DOMAIN,
-    STEP_ADD,
-    STEP_EDIT,
-    STEP_EDIT_PICK,
-    STEP_MOVE_DOWN,
-    STEP_MOVE_UP,
-    STEP_REMOVE,
-    STEP_SETTINGS,
+    STEP_INIT,
 )
 
 
@@ -145,25 +140,16 @@ class DailyPodcastsConfigFlow(ConfigFlow, domain=DOMAIN):
 
 
 class DailyPodcastsOptionsFlow(OptionsFlowWithReload):
-    """Manage everything from the UI: settings + the podcast list."""
+    """Integration-wide settings.
 
-    # --- Menu ------------------------------------------------------------
+    Podcasts (add / edit / remove / reorder) are managed from the "Daily
+    Podcasts" sidebar panel, so this flow is a single settings form.
+    """
+
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        podcasts = self.config_entry.options.get(CONF_PODCASTS, [])
-        count = len(podcasts)
-        menu = [STEP_SETTINGS, STEP_ADD]
-        if count:
-            menu += [STEP_EDIT, STEP_REMOVE]
-        if count > 1:
-            menu += [STEP_MOVE_UP, STEP_MOVE_DOWN]
-        return self.async_show_menu(step_id="init", menu_options=menu)
-
-    # --- Settings --------------------------------------------------------
-    async def async_step_settings(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
+        """Show the settings form directly (no menu — podcasts live in the panel)."""
         opts = dict(self.config_entry.options)
         if user_input is not None:
             opts[CONF_PLAYER] = user_input[CONF_PLAYER]
@@ -179,7 +165,8 @@ class DailyPodcastsOptionsFlow(OptionsFlowWithReload):
                 opts[CONF_TIMEZONE] = tz
             else:
                 opts.pop(CONF_TIMEZONE, None)
-            return self._save(opts)
+            # OptionsFlowWithReload reloads the entry for us on save.
+            return self.async_create_entry(title="", data=opts)
 
         schema = vol.Schema(
             {
@@ -207,184 +194,4 @@ class DailyPodcastsOptionsFlow(OptionsFlowWithReload):
                 ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
             }
         )
-        return self.async_show_form(step_id=STEP_SETTINGS, data_schema=schema)
-
-    # --- Add a podcast ---------------------------------------------------
-    async def async_step_add_podcast(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        errors: dict[str, str] = {}
-        if user_input is not None:
-            name = user_input[CONF_NAME].strip()
-            url = user_input[CONF_FEED_URL].strip()
-            try:
-                cv.url(url)
-            except vol.Invalid:
-                errors[CONF_FEED_URL] = "invalid_url"
-            if not name:
-                errors[CONF_NAME] = "name_required"
-            if not errors:
-                opts = dict(self.config_entry.options)
-                podcasts = list(opts.get(CONF_PODCASTS, []))
-                podcasts.append(
-                    {
-                        CONF_NAME: name,
-                        CONF_FEED_URL: url,
-                        CONF_CATCHUP: user_input.get(
-                            CONF_CATCHUP, DEFAULT_CATCHUP
-                        ),
-                    }
-                )
-                opts[CONF_PODCASTS] = podcasts
-                return self._save(opts)
-
-        schema = vol.Schema(
-            {
-                vol.Required(CONF_NAME): TextSelector(
-                    TextSelectorConfig(type=TextSelectorType.TEXT)
-                ),
-                vol.Required(CONF_FEED_URL): TextSelector(
-                    TextSelectorConfig(type=TextSelectorType.URL)
-                ),
-                vol.Optional(
-                    CONF_CATCHUP, default=DEFAULT_CATCHUP
-                ): BooleanSelector(),
-            }
-        )
-        return self.async_show_form(
-            step_id=STEP_ADD, data_schema=schema, errors=errors
-        )
-
-    # --- Edit a podcast --------------------------------------------------
-    async def async_step_edit_podcast(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """First pick which podcast to edit."""
-        podcasts = list(self.config_entry.options.get(CONF_PODCASTS, []))
-        if user_input is not None:
-            self._edit_index = int(user_input["podcast"])
-            return await self.async_step_edit_pick()
-        return self.async_show_form(
-            step_id=STEP_EDIT,
-            data_schema=vol.Schema(
-                {vol.Required("podcast"): self._podcast_selector(podcasts)}
-            ),
-        )
-
-    async def async_step_edit_pick(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Then edit the chosen podcast's name / URL / weekend catch-up."""
-        podcasts = list(self.config_entry.options.get(CONF_PODCASTS, []))
-        idx = getattr(self, "_edit_index", -1)
-        if not (0 <= idx < len(podcasts)):
-            # Nothing valid selected; go back to the menu.
-            return await self.async_step_init()
-        current = podcasts[idx]
-
-        errors: dict[str, str] = {}
-        if user_input is not None:
-            name = user_input[CONF_NAME].strip()
-            url = user_input[CONF_FEED_URL].strip()
-            try:
-                cv.url(url)
-            except vol.Invalid:
-                errors[CONF_FEED_URL] = "invalid_url"
-            if not name:
-                errors[CONF_NAME] = "name_required"
-            if not errors:
-                podcasts[idx] = {
-                    CONF_NAME: name,
-                    CONF_FEED_URL: url,
-                    CONF_CATCHUP: user_input.get(CONF_CATCHUP, DEFAULT_CATCHUP),
-                }
-                opts = dict(self.config_entry.options)
-                opts[CONF_PODCASTS] = podcasts
-                return self._save(opts)
-
-        schema = vol.Schema(
-            {
-                vol.Required(
-                    CONF_NAME, default=current.get(CONF_NAME, "")
-                ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
-                vol.Required(
-                    CONF_FEED_URL, default=current.get(CONF_FEED_URL, "")
-                ): TextSelector(TextSelectorConfig(type=TextSelectorType.URL)),
-                vol.Optional(
-                    CONF_CATCHUP,
-                    default=bool(
-                        current.get(
-                            CONF_CATCHUP,
-                            current.get(CONF_WEEKEND_CATCHUP, DEFAULT_CATCHUP),
-                        )
-                    ),
-                ): BooleanSelector(),
-            }
-        )
-        return self.async_show_form(
-            step_id=STEP_EDIT_PICK, data_schema=schema, errors=errors
-        )
-
-    # --- Remove a podcast ------------------------------------------------
-    async def async_step_remove_podcast(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        podcasts = list(self.config_entry.options.get(CONF_PODCASTS, []))
-        if user_input is not None:
-            idx = int(user_input["podcast"])
-            if 0 <= idx < len(podcasts):
-                podcasts.pop(idx)
-            opts = dict(self.config_entry.options)
-            opts[CONF_PODCASTS] = podcasts
-            return self._save(opts)
-        return self.async_show_form(
-            step_id=STEP_REMOVE,
-            data_schema=vol.Schema(
-                {vol.Required("podcast"): self._podcast_selector(podcasts)}
-            ),
-        )
-
-    # --- Reorder: move up ------------------------------------------------
-    async def async_step_move_up(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        return await self._move(user_input, STEP_MOVE_UP, direction=-1)
-
-    # --- Reorder: move down ----------------------------------------------
-    async def async_step_move_down(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        return await self._move(user_input, STEP_MOVE_DOWN, direction=1)
-
-    async def _move(
-        self, user_input, step_id: str, direction: int
-    ) -> ConfigFlowResult:
-        podcasts = list(self.config_entry.options.get(CONF_PODCASTS, []))
-        if user_input is not None:
-            idx = int(user_input["podcast"])
-            new_idx = idx + direction
-            if 0 <= idx < len(podcasts) and 0 <= new_idx < len(podcasts):
-                podcasts[idx], podcasts[new_idx] = podcasts[new_idx], podcasts[idx]
-            opts = dict(self.config_entry.options)
-            opts[CONF_PODCASTS] = podcasts
-            return self._save(opts)
-        return self.async_show_form(
-            step_id=step_id,
-            data_schema=vol.Schema(
-                {vol.Required("podcast"): self._podcast_selector(podcasts)}
-            ),
-        )
-
-    # --- Helpers ---------------------------------------------------------
-    def _podcast_selector(self, podcasts: list[dict]) -> SelectSelector:
-        options = [
-            {"value": str(i), "label": f"{i + 1}. {p.get(CONF_NAME, '?')}"}
-            for i, p in enumerate(podcasts)
-        ]
-        return SelectSelector(
-            SelectSelectorConfig(options=options, mode=SelectSelectorMode.LIST)
-        )
-
-    def _save(self, options: dict[str, Any]) -> ConfigFlowResult:
-        """Persist options. OptionsFlowWithReload reloads the entry for us."""
-        return self.async_create_entry(title="", data=options)
+        return self.async_show_form(step_id=STEP_INIT, data_schema=schema)

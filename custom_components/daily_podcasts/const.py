@@ -46,15 +46,9 @@ DEFAULT_MAX_LOOKBACK_DAYS = 18
 HWM_STORAGE_KEY = "daily_podcasts_hwm"
 HWM_STORAGE_VERSION = 1
 
-# Options-flow menu step ids
+# Options-flow step id (single settings form; podcasts are managed from the
+# "Daily Podcasts" sidebar panel).
 STEP_INIT = "init"
-STEP_SETTINGS = "settings"
-STEP_ADD = "add_podcast"
-STEP_EDIT = "edit_podcast"
-STEP_EDIT_PICK = "edit_pick"
-STEP_REMOVE = "remove_podcast"
-STEP_MOVE_UP = "move_up"
-STEP_MOVE_DOWN = "move_down"
 
 # Services
 SERVICE_BUILD_QUEUE = "build_queue"

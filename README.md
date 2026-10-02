@@ -21,8 +21,8 @@ out of the feeds.
 
 No external API, no cloud service — just the podcasts' own RSS feeds.
 **Everything is managed from the Home Assistant UI** — no YAML editing. You add,
-remove, and reorder podcasts and set the prepare time from the integration's
-**Configure** screen.
+remove, and reorder podcasts from the **Daily Podcasts** sidebar panel, and set
+the player and prepare time from the integration's **Configure** screen.
 
 ---
 
@@ -168,7 +168,7 @@ Everything is done in the UI — no YAML.
    `media_player`), the **time to prepare the daily playlist** (default 06:00),
    and whether to **prepare a playlist automatically each day**. (Preparing
    never plays — it just gets today's playlist ready.)
-3. Finish. Then open the integration's **Configure** button to add your
+3. Finish. Then open the **Daily Podcasts** panel in the sidebar to add your
    podcasts.
 
 Check **Settings → System → Logs** for lines beginning `[daily_podcasts]`.
@@ -176,18 +176,19 @@ Check **Settings → System → Logs** for lines beginning `[daily_podcasts]`.
 > **Coming from an older YAML setup?** If you still have a `daily_podcasts:`
 > block in `configuration.yaml`, the integration imports it into a UI entry once
 > on startup, then ignores the YAML. You can delete the block afterwards and
-> manage everything from Configure. New installs don't need any YAML at all.
+> manage everything from the UI. New installs don't need any YAML at all.
 
 ---
 
 ## Manage it (all in the UI)
 
-### The Daily Podcasts sidebar panel (recommended)
+### Podcasts — the Daily Podcasts sidebar panel
 
-The integration now provides a dedicated **Daily Podcasts** item in the Home
-Assistant sidebar — similar to the Shopping List panel. It opens a full-screen
-management view where you can add, remove, edit, and drag-reorder podcasts on a
-single screen, then save the entire list atomically.
+Your podcast list is managed from a dedicated **Daily Podcasts** item in the
+Home Assistant sidebar — similar to the Shopping List panel. It opens a
+full-screen management view where you can add, remove, edit, and drag-reorder
+podcasts (and toggle each one's catch-up) on a single screen, then save the
+entire list atomically.
 
 After updating and restarting Home Assistant, look for **Daily Podcasts** in the
 left sidebar with the podcast icon. If it is not visible immediately, refresh
@@ -197,22 +198,17 @@ required.
 The sidebar uses the same backend services that are available for automations:
 `daily_podcasts.list_podcasts` and `daily_podcasts.set_podcasts`.
 
-### The Configure menu (alternative)
+### Settings — the Configure screen
 
-Prefer not to use the sidebar? **Settings → Devices & services → Daily Podcast
-Queue → Configure** gives the same management via a step menu:
+**Settings → Devices & services → Daily Podcast Queue → Configure** holds the
+integration-wide settings (not the podcast list, which lives in the sidebar
+panel above):
 
-- **Settings** — change the player, the time to prepare the daily playlist, the
-  "prepare automatically each day" on/off switch, the **max catch-up look-back
-  (days)**, and an optional timezone override.
-- **Add a podcast** — enter a name and RSS feed URL, and whether to **catch up
-  missed episodes** (default on; off = today only). It's added to the end of the
-  list; the URL is validated.
-- **Edit a podcast** — change a podcast's name, feed URL, or its catch-up
-  setting.
-- **Remove a podcast** — pick one from the list to delete.
-- **Move a podcast earlier / later** — reorder the list; playback order follows
-  it.
+- The **player** to queue onto.
+- The **time to prepare the daily playlist**.
+- The **"prepare automatically each day"** on/off switch.
+- The **max catch-up look-back (days)**.
+- An optional **timezone override**.
 
 Changes take effect immediately (the integration reloads itself and re-arms the
 daily schedule). No restart, no YAML.
