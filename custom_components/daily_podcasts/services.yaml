@@ -98,6 +98,48 @@ play_history:
       selector:
         boolean:
 
+get_queue:
+  name: Get the current queue
+  description: >
+    Return the player's now-playing info and live queue, with each item mapped
+    back to its podcast name/title from recent history, plus the next scheduled
+    prepare time. Used by the Daily Podcasts panel Overview tab; returns a
+    response (no side effects).
+  fields:
+    player:
+      name: Player
+      description: media_player to inspect. Defaults to the configured player.
+      required: false
+      example: media_player.office
+      selector:
+        entity:
+          domain: media_player
+
+skip_to:
+  name: Skip to a queue position
+  description: >
+    Jump playback to a 0-based position in the current queue. Requires the
+    Sonos integration (uses sonos.play_queue).
+  fields:
+    player:
+      name: Player
+      description: media_player to control. Defaults to the configured player.
+      required: false
+      example: media_player.office
+      selector:
+        entity:
+          domain: media_player
+    position:
+      name: Queue position
+      description: 0-based index of the queue item to play (the first item is 0).
+      required: true
+      example: 2
+      selector:
+        number:
+          min: 0
+          max: 500
+          mode: box
+
 list_podcasts:
   name: List podcasts
   description: >

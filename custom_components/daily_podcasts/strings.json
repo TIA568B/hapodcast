@@ -38,6 +38,14 @@
     "play_history": {
       "name": "Play recorded podcast history",
       "description": "Replay recorded daily playlists (catch-up), in chronological order."
+    },
+    "get_queue": {
+      "name": "Get the current queue",
+      "description": "Return now-playing info and the live queue (used by the Overview tab)."
+    },
+    "skip_to": {
+      "name": "Skip to a queue position",
+      "description": "Jump playback to a 0-based position in the current queue (Sonos)."
     }
   }
 }

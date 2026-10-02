@@ -182,21 +182,29 @@ Check **Settings → System → Logs** for lines beginning `[daily_podcasts]`.
 
 ## Manage it (all in the UI)
 
-### Podcasts — the Daily Podcasts sidebar panel
+### The Daily Podcasts sidebar panel
 
-Your podcast list is managed from a dedicated **Daily Podcasts** item in the
-Home Assistant sidebar — similar to the Shopping List panel. It opens a
-full-screen management view where you can add, remove, edit, and drag-reorder
-podcasts (and toggle each one's catch-up) on a single screen, then save the
-entire list atomically.
+The integration adds a dedicated **Daily Podcasts** item to the Home Assistant
+sidebar — similar to the Shopping List panel. After updating and restarting Home
+Assistant, look for **Daily Podcasts** in the left sidebar with the podcast
+icon. If it is not visible immediately, refresh the browser once. No Lovelace
+dashboard card or manual dashboard resource is required.
 
-After updating and restarting Home Assistant, look for **Daily Podcasts** in the
-left sidebar with the podcast icon. If it is not visible immediately, refresh
-the browser once. No Lovelace dashboard card or manual dashboard resource is
-required.
+The panel has two tabs:
 
-The sidebar uses the same backend services that are available for automations:
-`daily_podcasts.list_podcasts` and `daily_podcasts.set_podcasts`.
+- **Overview** — shows what's playing now (with a progress bar), the current
+  play queue, and at-a-glance info: whether automatic daily prepare is on, the
+  **next scheduled prepare time**, the prepare time of day, and your podcast
+  count. Each queued item shows its podcast and episode title, with the current
+  item highlighted. A **Skip to Podcast** button on each item jumps playback
+  straight to it. (Skip uses `sonos.play_queue`, so it needs the Sonos
+  integration; on other players the button is disabled.)
+- **Management** — add, remove, edit, and drag-reorder podcasts (and toggle each
+  one's catch-up) on a single screen, then save the whole list atomically.
+
+The panel uses the same backend services that are available for automations:
+`daily_podcasts.list_podcasts`, `daily_podcasts.set_podcasts`,
+`daily_podcasts.get_queue`, and `daily_podcasts.skip_to`.
 
 ### Settings — the Configure screen
 

@@ -70,15 +70,18 @@ from .const import (
     DEFAULT_HISTORY_DIR,
     DEFAULT_MAX_LOOKBACK_DAYS,
     DOMAIN,
+    ATTR_POSITION,
     HWM_STORAGE_KEY,
     HWM_STORAGE_VERSION,
     LOG_PREFIX,
     MASS_DOMAIN,
     MASS_PLAY_MEDIA,
     SERVICE_BUILD_QUEUE,
+    SERVICE_GET_QUEUE,
     SERVICE_LIST_PODCASTS,
     SERVICE_PLAY_HISTORY,
     SERVICE_SET_PODCASTS,
+    SERVICE_SKIP_TO,
 )
 from .frontend import async_register_panel, async_remove_panel
 
@@ -145,6 +148,19 @@ PLAY_HISTORY_SCHEMA = vol.Schema(
         vol.Optional(ATTR_SINCE): cv.string,
         vol.Optional(ATTR_DAYS): cv.positive_int,
         vol.Optional(ATTR_DRY_RUN): cv.boolean,
+    }
+)
+
+GET_QUEUE_SCHEMA = vol.Schema(
+    {
+        vol.Optional(ATTR_PLAYER): cv.entity_id,
+    }
+)
+
+SKIP_TO_SCHEMA = vol.Schema(
+    {
+        vol.Optional(ATTR_PLAYER): cv.entity_id,
+        vol.Required(ATTR_POSITION): vol.All(int, vol.Range(min=0)),
     }
 )
 
@@ -1180,6 +1196,155 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
         await _async_queue_media(player, combined, dry_run)
 
+    # --- Overview panel helpers ------------------------------------------
+    def _next_prepare_iso() -> str | None:
+        """ISO timestamp of the next scheduled daily prepare, or None if off."""
+        cfg = _entry_config(hass)
+        if not cfg.get(CONF_ENABLED, DEFAULT_ENABLED):
+            return None
+        local_tz = _resolve_local_tz(hass, cfg.get(CONF_TIMEZONE))
+        at = str(cfg.get(CONF_AT, DEFAULT_AT))
+        parts = at.split(":")
+        while len(parts) < 3:
+            parts.append("0")
+        try:
+            hour, minute, second = int(parts[0]), int(parts[1]), int(parts[2])
+        except ValueError:
+            hour, minute, second = 6, 0, 0
+        now = dt.datetime.now(local_tz)
+        nxt = now.replace(hour=hour, minute=minute, second=second, microsecond=0)
+        if nxt <= now:
+            nxt = nxt + dt.timedelta(days=1)
+        return nxt.isoformat()
+
+    async def _sonos_queue_ids(player: str) -> list[str] | None:
+        """Return queue media_content_ids via sonos.get_queue, or None."""
+        if not hass.services.has_service("sonos", "get_queue"):
+            return None
+        try:
+            resp = await hass.services.async_call(
+                "sonos",
+                "get_queue",
+                {"entity_id": player},
+                blocking=True,
+                return_response=True,
+            )
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug(
+                "%s sonos.get_queue failed on %s (%s).", LOG_PREFIX, player, err
+            )
+            return None
+        items = (resp or {}).get(player) or []
+        return [item.get("media_content_id", "") for item in items]
+
+    async def handle_get_queue(call: ServiceCall) -> dict[str, Any]:
+        """Return now-playing + the live queue for the Overview panel.
+
+        Queue items are mapped back to podcast names/titles using today's (and,
+        as a fallback, the most recent) recorded history, matched by audio URL.
+        """
+        cfg = _entry_config(hass)
+        player = call.data.get(ATTR_PLAYER) or cfg.get(CONF_PLAYER)
+        local_tz = _resolve_local_tz(hass, cfg.get(CONF_TIMEZONE))
+
+        # Build an audio_url -> {name, title} map from recent history so queue
+        # items (bare MP3 URLs) can show which podcast they are.
+        base_dir = _history_base_dir()
+        dates = await hass.async_add_executor_job(_list_history_dates, base_dir)
+        url_map: dict[str, dict[str, str]] = {}
+        for date_str in dates[-7:]:  # recent week is plenty to label a queue
+            eps = await _load_history_episodes(date_str)
+            for ep in eps:
+                url = ep.get("audio_url")
+                if url:
+                    url_map[url] = {
+                        "name": ep.get("name", ""),
+                        "title": ep.get("title", ""),
+                    }
+
+        state = hass.states.get(player) if player else None
+        now_playing: dict[str, Any] = {}
+        queue: list[dict[str, Any]] = []
+
+        if state is not None:
+            attrs = state.attributes
+            current_id = attrs.get("media_content_id", "")
+            meta = url_map.get(current_id, {})
+            updated = attrs.get("media_position_updated_at")
+            if hasattr(updated, "isoformat"):
+                updated = updated.isoformat()
+            elif updated is not None:
+                updated = str(updated)
+            now_playing = {
+                "state": state.state,
+                "podcast": meta.get("name", ""),
+                "title": meta.get("title") or attrs.get("media_title", ""),
+                "media_content_id": current_id,
+                "position": attrs.get("media_position"),
+                "duration": attrs.get("media_duration"),
+                "position_updated_at": updated,
+                "queue_position": attrs.get("queue_position"),
+                "queue_size": attrs.get("queue_size"),
+            }
+
+            # Prefer the real Sonos queue; fall back to today's recorded
+            # playlist so non-Sonos players still show something sensible.
+            ids = await _sonos_queue_ids(player)
+            if ids is None:
+                today_str = dt.datetime.now(local_tz).strftime(DATE_FMT)
+                eps = await _load_history_episodes(today_str)
+                ids = [ep.get("audio_url", "") for ep in eps]
+
+            for idx, url in enumerate(ids):
+                meta = url_map.get(url, {})
+                queue.append(
+                    {
+                        "position": idx,  # 0-based (matches sonos.play_queue)
+                        "podcast": meta.get("name", ""),
+                        "title": meta.get("title", ""),
+                        "media_content_id": url,
+                        "current": bool(url) and url == current_id,
+                    }
+                )
+
+        return {
+            "player": player,
+            "now_playing": now_playing,
+            "queue": queue,
+            "next_prepare": _next_prepare_iso(),
+            "enabled": bool(cfg.get(CONF_ENABLED, DEFAULT_ENABLED)),
+            "at": str(cfg.get(CONF_AT, DEFAULT_AT)),
+            "podcast_count": len(cfg.get(CONF_PODCASTS) or []),
+            "can_skip": hass.services.has_service("sonos", "play_queue"),
+        }
+
+    async def handle_skip_to(call: ServiceCall) -> None:
+        """Jump playback to a 0-based queue position (Sonos: play_queue)."""
+        cfg = _entry_config(hass)
+        player = call.data.get(ATTR_PLAYER) or cfg.get(CONF_PLAYER)
+        position = int(call.data.get(ATTR_POSITION, 0))
+        if position < 0:
+            position = 0
+
+        if not hass.services.has_service("sonos", "play_queue"):
+            raise HomeAssistantError(
+                f"{LOG_PREFIX} Skipping to a queue position requires the Sonos "
+                f"integration (sonos.play_queue); player '{player}' does not "
+                "support it."
+            )
+        await hass.services.async_call(
+            "sonos",
+            "play_queue",
+            {"entity_id": player, "queue_position": position},
+            blocking=True,
+        )
+        _LOGGER.info(
+            "%s skip_to: jumped %s to queue position %d.",
+            LOG_PREFIX,
+            player,
+            position,
+        )
+
     # Register services once (they read the live entry config each call).
     if not hass.services.has_service(DOMAIN, SERVICE_BUILD_QUEUE):
         hass.services.async_register(
@@ -1191,6 +1356,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             SERVICE_PLAY_HISTORY,
             handle_play_history,
             schema=PLAY_HISTORY_SCHEMA,
+        )
+    if not hass.services.has_service(DOMAIN, SERVICE_GET_QUEUE):
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_GET_QUEUE,
+            handle_get_queue,
+            schema=GET_QUEUE_SCHEMA,
+            supports_response=SupportsResponse.ONLY,
+        )
+    if not hass.services.has_service(DOMAIN, SERVICE_SKIP_TO):
+        hass.services.async_register(
+            DOMAIN, SERVICE_SKIP_TO, handle_skip_to, schema=SKIP_TO_SCHEMA
         )
 
     # --- Daily scheduler (internal; no automations.yaml needed) ----------

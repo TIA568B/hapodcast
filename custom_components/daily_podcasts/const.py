@@ -53,6 +53,9 @@ STEP_INIT = "init"
 # Services
 SERVICE_BUILD_QUEUE = "build_queue"
 SERVICE_PLAY_HISTORY = "play_history"
+# Overview panel services.
+SERVICE_GET_QUEUE = "get_queue"
+SERVICE_SKIP_TO = "skip_to"
 
 # Service call fields
 ATTR_PLAYER = "player"
@@ -64,6 +67,7 @@ ATTR_START = "start"
 ATTR_END = "end"
 ATTR_SINCE = "since"
 ATTR_DAYS = "days"
+ATTR_POSITION = "position"  # 0-based queue index for skip_to
 
 # Music Assistant service used to queue media.
 MASS_DOMAIN = "mass"
