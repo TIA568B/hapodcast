@@ -108,9 +108,15 @@ HA `config/custom_components/` directory and restart. Home Assistant installs th
    To replay a previous day instead, use `daily_podcasts.play_history` (see
    [Catch-up](#catch-up-replay-past-days)).
 
+   **If there's nothing new to build when you press play** — typically because
+   the scheduled 06:00 prepare already built today's playlist and advanced the
+   per-podcast high-water marks — the button plays **today's already-prepared
+   playlist from history** instead of doing nothing. So pressing play always
+   plays today's episodes, whether or not a prepare already ran.
+
 Failures are isolated: a single unreachable or malformed feed is logged and the
-rest of the list still plays. If nothing is new since the last run, it logs that
-and leaves the speaker alone (and writes no history file).
+rest of the list still plays. In prepare-only mode (`play: false`), if nothing
+is new since the last run it logs that and writes no history file.
 
 To replay stored days later, call `daily_podcasts.play_history` — see
 [Catch-up: replay past days](#catch-up-replay-past-days).

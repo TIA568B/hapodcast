@@ -1049,6 +1049,24 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             # episodes already present in recent history. Preserve those HWM
             # updates so they are not reconsidered on every run.
             await _commit_build()
+
+            # In play mode (the button / default service call), "nothing new"
+            # usually means the scheduled 06:00 prepare already built today's
+            # playlist and advanced the high-water marks. The user still wants
+            # to HEAR today's playlist, so fall back to playing what was
+            # prepared and recorded for today, rather than doing nothing.
+            if play and not dry_run:
+                today_eps = await _load_history_episodes(today_str)
+                if today_eps:
+                    _LOGGER.info(
+                        "%s Nothing new to build; playing today's prepared "
+                        "playlist from history (%d episode(s)).",
+                        LOG_PREFIX,
+                        len(today_eps),
+                    )
+                    await _async_queue_media(player, today_eps, dry_run)
+                    return
+
             _LOGGER.info(
                 "%s Nothing new since last run; nothing recorded or played.",
                 LOG_PREFIX,
