@@ -24,6 +24,7 @@ Services:
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import glob
 import json
@@ -429,6 +430,35 @@ def _history_latest_by_name(base_dir: str, days: int) -> dict[str, str]:
     return latest
 
 
+def _history_latest_by_feed_url(base_dir: str, days: int) -> dict[str, str]:
+    """Newest recorded `published_local` ISO per feed_url, from history.
+
+    feed_url is the stable per-feed identity (unlike the user-facing name), so
+    this is the primary source for backfilling high-water marks (H2). History
+    entries written before feed_url was recorded simply lack the key and are
+    skipped here; the caller falls back to name-keyed correlation for those.
+    Blocking (executor).
+    """
+    latest: dict[str, str] = {}
+    recent = _list_history_dates(base_dir)[-max(1, days):]
+    for date_str in recent:
+        path = os.path.join(base_dir, f"{date_str}.json")
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                payload = json.load(fh)
+        except Exception:  # noqa: BLE001
+            continue
+        for ep in (payload or {}).get("episodes", []) or []:
+            feed_url = ep.get("feed_url")
+            pub = ep.get("published_local")
+            if not feed_url or not pub:
+                continue
+            prev = latest.get(feed_url)
+            if prev is None or pub > prev:
+                latest[feed_url] = pub
+    return latest
+
+
 # ---------------------------------------------------------------------------
 # Core pipeline (pure; safe to call from executor)
 # ---------------------------------------------------------------------------
@@ -593,6 +623,9 @@ def _build_episode_list(
             included.append(
                 {
                     "name": name,
+                    # feed_url is the stable identity for HWM backfill and
+                    # correlation; name is only a user-facing label (H2).
+                    CONF_FEED_URL: feed_url,
                     "guid": ep["guid"],
                     "title": ep["title"],
                     "audio_url": ep["audio_url"],
@@ -719,6 +752,41 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
             len(cleaned),
         )
 
+        # Reconcile the HWM dict against the configured feed_url set so a
+        # removed feed drops its stale mark and a later re-add is a clean
+        # first-run (M4). Done AFTER async_update_entry so the subsequent
+        # reload (async_setup_entry) re-reads the now-pruned store. Best-effort:
+        # skip quietly if setup hasn't loaded the lock/HWM yet, and never raise
+        # out of the service handler on a save failure.
+        store = hass.data.get(DOMAIN, {})
+        build_lock = store.get("build_lock")
+        hwm_store = store.get("hwm_store")
+        if build_lock is not None and hwm_store is not None and "hwm" in store:
+            configured_urls = {c[CONF_FEED_URL] for c in cleaned}
+            async with build_lock:
+                live = dict(hass.data[DOMAIN].get("hwm", {}))
+                pruned = {
+                    u: v for u, v in live.items() if u in configured_urls
+                }
+                if pruned != live:
+                    hass.data[DOMAIN]["hwm"] = pruned
+                    dropped = len(live) - len(pruned)
+                    try:
+                        await hwm_store.async_save(pruned)
+                        _LOGGER.info(
+                            "%s set_podcasts: pruned %d stale HWM entr(y/ies) "
+                            "for removed feed(s).",
+                            LOG_PREFIX,
+                            dropped,
+                        )
+                    except Exception as err:  # noqa: BLE001
+                        _LOGGER.error(
+                            "%s set_podcasts: failed to persist pruned HWM "
+                            "(%s); in-memory state updated.",
+                            LOG_PREFIX,
+                            err,
+                        )
+
     if not hass.services.has_service(DOMAIN, SERVICE_LIST_PODCASTS):
         hass.services.async_register(
             DOMAIN,
@@ -763,6 +831,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hwm: dict[str, str] = (await hwm_store.async_load()) or {}
     hass.data[DOMAIN]["hwm"] = hwm
 
+    # Single lock serialising the whole read-modify-write span of a build
+    # (daily/intraday/manual) and the set_podcasts HWM reconcile, so concurrent
+    # runs can't clobber each other's HWM advances or race on the Store. Created
+    # with setdefault so a config reload reuses the existing lock.
+    hass.data[DOMAIN].setdefault("build_lock", asyncio.Lock())
+
     async def _async_save_hwm() -> None:
         await hwm_store.async_save(hass.data[DOMAIN].get("hwm", {}))
 
@@ -780,12 +854,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if not os.path.isabs(base_dir0):
             base_dir0 = hass.config.path(base_dir0)
         lookback0 = int(cfg0.get(CONF_MAX_LOOKBACK_DAYS, DEFAULT_MAX_LOOKBACK_DAYS))
+        # Correlate history to feeds by feed_url (the stable identity); fall
+        # back to name only for pre-upgrade history entries that predate the
+        # feed_url being recorded, so old data still seeds correctly (H2).
+        latest_by_url = await hass.async_add_executor_job(
+            _history_latest_by_feed_url, base_dir0, lookback0
+        )
         latest_by_name = await hass.async_add_executor_job(
             _history_latest_by_name, base_dir0, lookback0
         )
         changed = False
         for p in missing:
-            iso = latest_by_name.get(p.get(CONF_NAME))
+            iso = latest_by_url.get(p[CONF_FEED_URL])
+            if iso is None:
+                iso = latest_by_name.get(p.get(CONF_NAME))
             if iso:
                 hwm[p[CONF_FEED_URL]] = iso
                 changed = True
@@ -892,8 +974,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         # Clear the queue first, then build a real queue: first item "play",
         # rest "add".
-        import asyncio
-
         try:
             await hass.services.async_call(
                 "media_player",
@@ -965,12 +1045,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 path,
             )
         except Exception as err:  # noqa: BLE001
+            # History is the source of truth: if the write didn't land, re-raise
+            # so the caller (_commit_build) aborts the HWM advance instead of
+            # moving the mark past episodes that were never durably recorded.
             _LOGGER.error(
                 "%s Failed to write history for %s (%s).",
                 LOG_PREFIX,
                 date_str,
                 err,
             )
+            raise
 
     # --- Core build routine (used by service + daily scheduler) ----------
     async def _run_build(player=None, tz_name=None, dry_run=False, play=True):
@@ -1002,110 +1086,141 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         max_lookback = cfg.get(CONF_MAX_LOOKBACK_DAYS, DEFAULT_MAX_LOOKBACK_DAYS)
         local_tz = _resolve_local_tz(hass, tz_name)
 
-        hwm = dict(hass.data[DOMAIN].get("hwm", {}))
-        base_dir = _history_base_dir()
-        seen_guids = await hass.async_add_executor_job(
-            _recent_guids, base_dir, int(max_lookback)
-        )
+        # Hold the build lock across the ENTIRE read-modify-write span of this
+        # build -- from the HWM snapshot, through the feed I/O, to the history
+        # write and HWM save in _commit_build -- so concurrent builds (daily /
+        # intraday / manual) are serialised and can't clobber each other (C1).
+        async with hass.data[DOMAIN]["build_lock"]:
+            hwm = dict(hass.data[DOMAIN].get("hwm", {}))
+            base_dir = _history_base_dir()
+            seen_guids = await hass.async_add_executor_job(
+                _recent_guids, base_dir, int(max_lookback)
+            )
 
-        _LOGGER.info(
-            "%s Starting run: %d podcast(s), player=%s, dry_run=%s, play=%s",
-            LOG_PREFIX,
-            len(podcasts),
-            player,
-            dry_run,
-            play,
-        )
+            _LOGGER.info(
+                "%s Starting run: %d podcast(s), player=%s, dry_run=%s, play=%s",
+                LOG_PREFIX,
+                len(podcasts),
+                player,
+                dry_run,
+                play,
+            )
 
-        included, skipped, errors, new_hwm = await hass.async_add_executor_job(
-            _build_episode_list,
-            podcasts,
-            local_tz,
-            fetch_timeout,
-            hwm,
-            seen_guids,
-            int(max_lookback),
-        )
+            included, skipped, errors, new_hwm = await hass.async_add_executor_job(
+                _build_episode_list,
+                podcasts,
+                local_tz,
+                fetch_timeout,
+                hwm,
+                seen_guids,
+                int(max_lookback),
+            )
 
-        _LOGGER.info(
-            "%s Summary: %d included, %d skipped, %d error(s).",
-            LOG_PREFIX,
-            len(included),
-            len(skipped),
-            len(errors),
-        )
+            _LOGGER.info(
+                "%s Summary: %d included, %d skipped, %d error(s).",
+                LOG_PREFIX,
+                len(included),
+                len(skipped),
+                len(errors),
+            )
 
-        today_str = dt.datetime.now(local_tz).strftime(DATE_FMT)
+            today_str = dt.datetime.now(local_tz).strftime(DATE_FMT)
 
-        async def _commit_build() -> None:
-            """Record a successfully prepared/played build and advance HWM."""
-            if dry_run:
-                return
-
-            # Record only the episodes we're actually offering (merged into the
-            # day's history).
-            if included:
-                await _async_save_history(today_str, player, included)
-            # Advance each feed's HWM to the newest in-window episode it saw --
-            # including episodes de-duped away -- so nothing already accounted
-            # for is ever re-offered, even if history later rotates out. Feeds
-            # that errored are absent from new_hwm (HWM kept -> retried).
-            if new_hwm:
-                hwm.update(new_hwm)
-                hass.data[DOMAIN]["hwm"] = hwm
-                await _async_save_hwm()
-
-        if not included:
-            # Even with no queueable episodes, new_hwm may contain timestamps for
-            # episodes already present in recent history. Preserve those HWM
-            # updates so they are not reconsidered on every run.
-            await _commit_build()
-
-            # In play mode (the button / default service call), "nothing new"
-            # usually means the scheduled 06:00 prepare already built today's
-            # playlist and advanced the high-water marks. The user still wants
-            # to HEAR today's playlist, so fall back to playing what was
-            # prepared and recorded for today, rather than doing nothing.
-            if play and not dry_run:
-                today_eps = await _load_history_episodes(today_str)
-                if today_eps:
-                    _LOGGER.info(
-                        "%s Nothing new to build; playing today's prepared "
-                        "playlist from history (%d episode(s)).",
-                        LOG_PREFIX,
-                        len(today_eps),
-                    )
-                    await _async_queue_media(player, today_eps, dry_run)
+            async def _commit_build() -> None:
+                """Record a successfully prepared/played build and advance HWM."""
+                if dry_run:
                     return
 
+                # Record only the episodes we're actually offering (merged into the
+                # day's history). _async_save_history re-raises on a failed write,
+                # so when there is something to record the HWM advance below is only
+                # reached on a confirmed, durable history write (H3). When there is
+                # nothing to record (no new episodes), the HWM may still advance for
+                # episodes already present in recent history -- there is no write to
+                # confirm because those episodes are already recorded.
+                if included:
+                    await _async_save_history(today_str, player, included)
+                # Advance each feed's HWM to the newest in-window episode it saw --
+                # including episodes de-duped away -- so nothing already accounted
+                # for is ever re-offered, even if history later rotates out. Feeds
+                # that errored are absent from new_hwm (HWM kept -> retried).
+                # Re-read the LIVE hwm under the build lock and merge new_hwm into
+                # it (rather than overwriting from the stale per-run snapshot) so a
+                # concurrent run's advances are never clobbered (C1).
+                if new_hwm:
+                    live = dict(hass.data[DOMAIN].get("hwm", {}))
+                    live.update(new_hwm)
+                    hass.data[DOMAIN]["hwm"] = live
+                    await _async_save_hwm()
+
+            if not included:
+                # Even with no queueable episodes, new_hwm may contain timestamps for
+                # episodes already present in recent history. Preserve those HWM
+                # updates so they are not reconsidered on every run.
+                await _commit_build()
+
+                # In play mode (the button / default service call), "nothing new"
+                # usually means the scheduled 06:00 prepare already built today's
+                # playlist and advanced the high-water marks. The user still wants
+                # to HEAR today's playlist, so fall back to playing what was
+                # prepared and recorded for today, rather than doing nothing.
+                if play and not dry_run:
+                    today_eps = await _load_history_episodes(today_str)
+                    if today_eps:
+                        _LOGGER.info(
+                            "%s Nothing new to build; playing today's prepared "
+                            "playlist from history (%d episode(s)).",
+                            LOG_PREFIX,
+                            len(today_eps),
+                        )
+                        await _async_queue_media(player, today_eps, dry_run)
+                        return
+
+                _LOGGER.info(
+                    "%s Nothing new since last run; nothing recorded or played.",
+                    LOG_PREFIX,
+                )
+                return
+
             _LOGGER.info(
-                "%s Nothing new since last run; nothing recorded or played.",
+                "%s Playlist (%d): %s",
                 LOG_PREFIX,
+                len(included),
+                " -> ".join(ep["name"] for ep in included),
             )
-            return
 
-        _LOGGER.info(
-            "%s Playlist (%d): %s",
-            LOG_PREFIX,
-            len(included),
-            " -> ".join(ep["name"] for ep in included),
-        )
+            if not play:
+                # The scheduled prepare path intentionally commits without
+                # playback. A manual play path commits only after queueing succeeds.
+                await _commit_build()
+                _LOGGER.info(
+                    "%s Prepared the playlist and recorded it to history; not "
+                    "playing now (play=False). Use the service/button to play.",
+                    LOG_PREFIX,
+                )
+                return
 
-        if not play:
-            # The scheduled prepare path intentionally commits without
-            # playback. A manual play path commits only after queueing succeeds.
-            await _commit_build()
-            _LOGGER.info(
-                "%s Prepared the playlist and recorded it to history; not "
-                "playing now (play=False). Use the service/button to play.",
-                LOG_PREFIX,
-            )
-            return
-
-        # Do not record or advance HWM until playback has been queued
-        # successfully. If Sonos fails, the same episodes remain retryable.
-        await _async_queue_media(player, included, dry_run)
-        await _commit_build()
+            # Commit ordering depends on the play backend (H1):
+            #
+            # - Music Assistant: mass.play_media is fire-and-queue -- a successful
+            #   service return does NOT guarantee the episodes actually played, so
+            #   "played" must not gate the HWM. History is the durable artifact
+            #   play_history can replay, so we record + advance the HWM FIRST (on a
+            #   confirmed history write) and then issue the play. If the play call
+            #   later fails, the episodes are safe in history (replayable) and the
+            #   HWM is correct -- no silent loss. A play failure still propagates
+            #   to the caller/log but must not roll back the commit.
+            #
+            # - Native/Sonos fallback: _async_queue_media raises on a failed
+            #   per-item play_media BEFORE any commit, so queue-then-commit keeps
+            #   its existing retry-safety (a failed queue leaves the HWM unmoved).
+            use_mass = hass.services.has_service(MASS_DOMAIN, MASS_PLAY_MEDIA)
+            if use_mass:
+                await _commit_build()
+                await _async_queue_media(player, included, dry_run)
+            else:
+                await _async_queue_media(player, included, dry_run)
+                await _commit_build()
 
     # --- Service: build_queue --------------------------------------------
     async def handle_build_queue(call: ServiceCall) -> None:
