@@ -25,6 +25,10 @@
           "at": "Time to prepare the daily playlist",
           "enabled": "Prepare a playlist automatically each day",
           "max_lookback_days": "Max catch-up look-back (days)",
+          "intraday_enabled": "Also refresh during the day (prepare only, never plays)",
+          "intraday_interval_hours": "Daytime refresh interval (hours)",
+          "intraday_start_hour": "Daytime refresh start hour (0-23)",
+          "intraday_end_hour": "Daytime refresh end hour (0-23)",
           "timezone": "Timezone override (optional, e.g. America/New_York)"
         }
       }

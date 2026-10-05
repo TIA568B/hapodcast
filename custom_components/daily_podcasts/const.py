@@ -33,6 +33,12 @@ CONF_HISTORY_DIR = "history_dir"
 CONF_MAX_LOOKBACK_DAYS = "max_lookback_days"
 CONF_AT = "at"  # daily "prepare playlist" time, "HH:MM:SS"
 CONF_ENABLED = "enabled"  # daily prepare on/off
+# Intraday prepare-only refresh: extra prepare runs during a daytime window so
+# today's recorded playlist picks up episodes that publish after the daily run.
+CONF_INTRADAY_ENABLED = "intraday_enabled"
+CONF_INTRADAY_INTERVAL_HOURS = "intraday_interval_hours"
+CONF_INTRADAY_START_HOUR = "intraday_start_hour"
+CONF_INTRADAY_END_HOUR = "intraday_end_hour"
 
 # Defaults
 DEFAULT_FETCH_TIMEOUT = 20
@@ -41,6 +47,11 @@ DEFAULT_AT = "06:00:00"
 DEFAULT_ENABLED = True
 DEFAULT_CATCHUP = True
 DEFAULT_MAX_LOOKBACK_DAYS = 18
+# Intraday refresh defaults: off by default; when on, hourly between 07:00-17:00.
+DEFAULT_INTRADAY_ENABLED = False
+DEFAULT_INTRADAY_INTERVAL_HOURS = 1
+DEFAULT_INTRADAY_START_HOUR = 7
+DEFAULT_INTRADAY_END_HOUR = 17
 
 # Per-podcast high-water mark storage (helpers.storage.Store).
 HWM_STORAGE_KEY = "daily_podcasts_hwm"

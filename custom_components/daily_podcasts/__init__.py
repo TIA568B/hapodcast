@@ -36,7 +36,10 @@ from homeassistant.config_entries import ConfigEntry, SOURCE_IMPORT
 from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
-from homeassistant.helpers.event import async_track_time_change
+from homeassistant.helpers.event import (
+    async_track_time_change,
+    async_track_time_interval,
+)
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.typing import ConfigType
 
@@ -55,6 +58,10 @@ from .const import (
     CONF_FEED_URL,
     CONF_FETCH_TIMEOUT,
     CONF_HISTORY_DIR,
+    CONF_INTRADAY_ENABLED,
+    CONF_INTRADAY_END_HOUR,
+    CONF_INTRADAY_INTERVAL_HOURS,
+    CONF_INTRADAY_START_HOUR,
     CONF_NAME,
     CONF_CATCHUP,
     CONF_MAX_LOOKBACK_DAYS,
@@ -68,6 +75,10 @@ from .const import (
     DEFAULT_ENABLED,
     DEFAULT_FETCH_TIMEOUT,
     DEFAULT_HISTORY_DIR,
+    DEFAULT_INTRADAY_ENABLED,
+    DEFAULT_INTRADAY_END_HOUR,
+    DEFAULT_INTRADAY_INTERVAL_HOURS,
+    DEFAULT_INTRADAY_START_HOUR,
     DEFAULT_MAX_LOOKBACK_DAYS,
     DOMAIN,
     ATTR_POSITION,
@@ -1367,6 +1378,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             "next_prepare": _next_prepare_iso(),
             "enabled": bool(cfg.get(CONF_ENABLED, DEFAULT_ENABLED)),
             "at": str(cfg.get(CONF_AT, DEFAULT_AT)),
+            "intraday_enabled": bool(
+                cfg.get(CONF_INTRADAY_ENABLED, DEFAULT_INTRADAY_ENABLED)
+            ),
+            "intraday_interval_hours": int(
+                cfg.get(
+                    CONF_INTRADAY_INTERVAL_HOURS,
+                    DEFAULT_INTRADAY_INTERVAL_HOURS,
+                )
+            ),
+            "intraday_start_hour": int(
+                cfg.get(CONF_INTRADAY_START_HOUR, DEFAULT_INTRADAY_START_HOUR)
+            ),
+            "intraday_end_hour": int(
+                cfg.get(CONF_INTRADAY_END_HOUR, DEFAULT_INTRADAY_END_HOUR)
+            ),
             "podcast_count": len(cfg.get(CONF_PODCASTS) or []),
             "can_skip": is_sonos
             and hass.services.has_service("sonos", "play_queue"),
@@ -1474,12 +1500,43 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
         await _run_build(play=False)
 
+    async def _intraday_run(now):
+        # Extra prepare-only run during the configured daytime window, so
+        # today's recorded playlist picks up episodes that publish after the
+        # daily run. Like the daily run, it NEVER plays. The interval timer
+        # fires around the clock; we gate on the window here.
+        cfg = _entry_config(hass)
+        start = int(cfg.get(CONF_INTRADAY_START_HOUR, DEFAULT_INTRADAY_START_HOUR))
+        end = int(cfg.get(CONF_INTRADAY_END_HOUR, DEFAULT_INTRADAY_END_HOUR))
+        local_tz = _resolve_local_tz(hass, cfg.get(CONF_TIMEZONE))
+        hour_now = dt.datetime.now(local_tz).hour
+        # Window is [start, end): inclusive of start hour, exclusive of end.
+        in_window = (
+            start <= hour_now < end
+            if start <= end
+            else (hour_now >= start or hour_now < end)  # overnight window
+        )
+        if not in_window:
+            return
+        _LOGGER.info(
+            "%s Intraday refresh at %s (window %02d:00-%02d:00): preparing "
+            "today's playlist.",
+            LOG_PREFIX,
+            now,
+            start,
+            end,
+        )
+        await _run_build(play=False)
+
     def _arm_schedule() -> None:
-        """(Re)arm the daily time trigger from the current options."""
-        # Cancel any previous timer.
+        """(Re)arm the daily time trigger (and intraday interval) from options."""
+        # Cancel any previous timers.
         cancel = hass.data[DOMAIN].pop("cancel_timer", None)
         if cancel:
             cancel()
+        cancel_intraday = hass.data[DOMAIN].pop("cancel_intraday", None)
+        if cancel_intraday:
+            cancel_intraday()
 
         cfg = _entry_config(hass)
         if not cfg.get(CONF_ENABLED, DEFAULT_ENABLED):
@@ -1511,6 +1568,34 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             second,
         )
 
+        # Optional intraday prepare-only refresh within a daytime window.
+        if cfg.get(CONF_INTRADAY_ENABLED, DEFAULT_INTRADAY_ENABLED):
+            interval = int(
+                cfg.get(
+                    CONF_INTRADAY_INTERVAL_HOURS,
+                    DEFAULT_INTRADAY_INTERVAL_HOURS,
+                )
+            )
+            if interval < 1:
+                interval = 1
+            start = int(
+                cfg.get(CONF_INTRADAY_START_HOUR, DEFAULT_INTRADAY_START_HOUR)
+            )
+            end = int(
+                cfg.get(CONF_INTRADAY_END_HOUR, DEFAULT_INTRADAY_END_HOUR)
+            )
+            hass.data[DOMAIN]["cancel_intraday"] = async_track_time_interval(
+                hass, _intraday_run, dt.timedelta(hours=interval)
+            )
+            _LOGGER.info(
+                "%s Intraday refresh every %dh within %02d:00-%02d:00 local "
+                "time (prepare only).",
+                LOG_PREFIX,
+                interval,
+                start,
+                end,
+            )
+
     _arm_schedule()
 
     # Note: the options flow subclasses OptionsFlowWithReload, so Home Assistant
@@ -1532,11 +1617,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Unload the config entry: cancel the timer and drop stored state."""
+    """Unload the config entry: cancel the timers and drop stored state."""
     store = hass.data.get(DOMAIN, {})
     cancel = store.pop("cancel_timer", None)
     if cancel:
         cancel()
+    cancel_intraday = store.pop("cancel_intraday", None)
+    if cancel_intraday:
+        cancel_intraday()
     store.pop("entry", None)
     async_remove_panel(hass)
     return True

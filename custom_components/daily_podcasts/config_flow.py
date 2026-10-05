@@ -35,6 +35,10 @@ from .const import (
     CONF_AT,
     CONF_ENABLED,
     CONF_FEED_URL,
+    CONF_INTRADAY_ENABLED,
+    CONF_INTRADAY_END_HOUR,
+    CONF_INTRADAY_INTERVAL_HOURS,
+    CONF_INTRADAY_START_HOUR,
     CONF_NAME,
     CONF_PLAYER,
     CONF_CATCHUP,
@@ -45,6 +49,10 @@ from .const import (
     DEFAULT_AT,
     DEFAULT_CATCHUP,
     DEFAULT_ENABLED,
+    DEFAULT_INTRADAY_ENABLED,
+    DEFAULT_INTRADAY_END_HOUR,
+    DEFAULT_INTRADAY_INTERVAL_HOURS,
+    DEFAULT_INTRADAY_START_HOUR,
     DEFAULT_MAX_LOOKBACK_DAYS,
     DOMAIN,
     STEP_INIT,
@@ -160,6 +168,25 @@ class DailyPodcastsOptionsFlow(OptionsFlowWithReload):
                     CONF_MAX_LOOKBACK_DAYS, DEFAULT_MAX_LOOKBACK_DAYS
                 )
             )
+            opts[CONF_INTRADAY_ENABLED] = user_input.get(
+                CONF_INTRADAY_ENABLED, DEFAULT_INTRADAY_ENABLED
+            )
+            opts[CONF_INTRADAY_INTERVAL_HOURS] = int(
+                user_input.get(
+                    CONF_INTRADAY_INTERVAL_HOURS,
+                    DEFAULT_INTRADAY_INTERVAL_HOURS,
+                )
+            )
+            opts[CONF_INTRADAY_START_HOUR] = int(
+                user_input.get(
+                    CONF_INTRADAY_START_HOUR, DEFAULT_INTRADAY_START_HOUR
+                )
+            )
+            opts[CONF_INTRADAY_END_HOUR] = int(
+                user_input.get(
+                    CONF_INTRADAY_END_HOUR, DEFAULT_INTRADAY_END_HOUR
+                )
+            )
             tz = (user_input.get(CONF_TIMEZONE) or "").strip()
             if tz:
                 opts[CONF_TIMEZONE] = tz
@@ -187,6 +214,43 @@ class DailyPodcastsOptionsFlow(OptionsFlowWithReload):
                 ): NumberSelector(
                     NumberSelectorConfig(
                         min=1, max=90, step=1, mode=NumberSelectorMode.BOX
+                    )
+                ),
+                vol.Optional(
+                    CONF_INTRADAY_ENABLED,
+                    default=opts.get(
+                        CONF_INTRADAY_ENABLED, DEFAULT_INTRADAY_ENABLED
+                    ),
+                ): BooleanSelector(),
+                vol.Optional(
+                    CONF_INTRADAY_INTERVAL_HOURS,
+                    default=opts.get(
+                        CONF_INTRADAY_INTERVAL_HOURS,
+                        DEFAULT_INTRADAY_INTERVAL_HOURS,
+                    ),
+                ): NumberSelector(
+                    NumberSelectorConfig(
+                        min=1, max=12, step=1, mode=NumberSelectorMode.BOX
+                    )
+                ),
+                vol.Optional(
+                    CONF_INTRADAY_START_HOUR,
+                    default=opts.get(
+                        CONF_INTRADAY_START_HOUR, DEFAULT_INTRADAY_START_HOUR
+                    ),
+                ): NumberSelector(
+                    NumberSelectorConfig(
+                        min=0, max=23, step=1, mode=NumberSelectorMode.BOX
+                    )
+                ),
+                vol.Optional(
+                    CONF_INTRADAY_END_HOUR,
+                    default=opts.get(
+                        CONF_INTRADAY_END_HOUR, DEFAULT_INTRADAY_END_HOUR
+                    ),
+                ): NumberSelector(
+                    NumberSelectorConfig(
+                        min=0, max=23, step=1, mode=NumberSelectorMode.BOX
                     )
                 ),
                 vol.Optional(

@@ -1,6 +1,6 @@
 /* Daily Podcasts full-screen Home Assistant sidebar panel. */
 
-const PANEL_VERSION = "1.10.1";
+const PANEL_VERSION = "1.12.0";
 
 // Prevent keystrokes typed into a form field from reaching Home Assistant's
 // global keyboard shortcuts (e.g. "c" quick-bar, "e", "a"). HA registers its
@@ -497,6 +497,11 @@ class DailyPodcastsPanel extends HTMLElement {
     addInfo("Automatic prepare", ov.enabled ? "On" : "Off");
     addInfo("Next prepare", ov.enabled ? (this._fmtWhen(ov.next_prepare) || "—") : "—");
     addInfo("Prepare time", ov.at || "—");
+    if (ov.enabled && ov.intraday_enabled) {
+      const h2 = (n) => String(n).padStart(2, "0") + ":00";
+      const every = ov.intraday_interval_hours === 1 ? "hourly" : `every ${ov.intraday_interval_hours}h`;
+      addInfo("Daytime refresh", `${every}, ${h2(ov.intraday_start_hour)}–${h2(ov.intraday_end_hour)}`);
+    }
     addInfo("Podcasts", String(ov.podcast_count ?? "—"));
     if (ov.queue_source === "live") addInfo("Queue length", String((ov.queue || []).length));
     page.appendChild(infoCard);

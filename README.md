@@ -231,6 +231,12 @@ panel above):
 - The **time to prepare the daily playlist**.
 - The **"prepare automatically each day"** on/off switch.
 - The **max catch-up look-back (days)**.
+- **Daytime refresh** (off by default): when on, the integration runs extra
+  **prepare-only** passes during a daytime window, so today's recorded playlist
+  picks up episodes that publish after the daily run. Configure the **interval
+  (hours)** and the **start/end hour** of the window (default hourly,
+  07:00–17:00). Like the daily run, these never auto-play. Requires the daily
+  automatic prepare to be on.
 - An optional **timezone override**.
 
 Changes take effect immediately (the integration reloads itself and re-arms the
