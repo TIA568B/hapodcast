@@ -114,6 +114,15 @@ HA `config/custom_components/` directory and restart. Home Assistant installs th
    playlist from history** instead of doing nothing. So pressing play always
    plays today's episodes, whether or not a prepare already ran.
 
+   **Instant play (`prefer_prepared: true`).** A normal `build_queue` fetches
+   and parses every feed before it queues, which can take ~15-25s (6 feeds ≈
+   20s in testing) — a noticeable delay when triggering from a physical button.
+   Pass `prefer_prepared: true` and, if today's playlist is already prepared
+   (which it will be once the daily or intraday prepare has run), the service
+   plays it **immediately without fetching feeds** — playback starts in about a
+   second. It only falls back to a full fetch-and-build if nothing is prepared
+   for today yet. This is the recommended flag for button / voice triggers.
+
 Failures are isolated: a single unreachable or malformed feed is logged and the
 rest of the list still plays. In prepare-only mode (`play: false`), if nothing
 is new since the last run it logs that and writes no history file.

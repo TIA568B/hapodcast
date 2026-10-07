@@ -74,6 +74,9 @@ ATTR_PLAYER = "player"
 ATTR_TZ = "tz"
 ATTR_DRY_RUN = "dry_run"
 ATTR_PLAY = "play"
+# build_queue: play today's already-prepared playlist from history (instant,
+# no feed fetch) when one exists; only fetch+build if nothing is prepared yet.
+ATTR_PREFER_PREPARED = "prefer_prepared"
 ATTR_DATE = "date"
 ATTR_START = "start"
 ATTR_END = "end"

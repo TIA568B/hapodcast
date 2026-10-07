@@ -51,6 +51,7 @@ from .const import (
     ATTR_END,
     ATTR_PLAY,
     ATTR_PLAYER,
+    ATTR_PREFER_PREPARED,
     ATTR_SINCE,
     ATTR_START,
     ATTR_TZ,
@@ -149,6 +150,7 @@ BUILD_QUEUE_SCHEMA = vol.Schema(
         vol.Optional(ATTR_TZ): cv.string,
         vol.Optional(ATTR_DRY_RUN): cv.boolean,
         vol.Optional(ATTR_PLAY): cv.boolean,
+        vol.Optional(ATTR_PREFER_PREPARED): cv.boolean,
     }
 )
 
@@ -1057,7 +1059,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             raise
 
     # --- Core build routine (used by service + daily scheduler) ----------
-    async def _run_build(player=None, tz_name=None, dry_run=False, play=True):
+    async def _run_build(
+        player=None,
+        tz_name=None,
+        dry_run=False,
+        play=True,
+        prefer_prepared=False,
+    ):
         """Build the catch-up playlist, record it, and optionally play.
 
         Includes everything new since each podcast's high-water mark (see
@@ -1067,6 +1075,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         play=True  -> record + play now (manual / button / default service call)
         play=False -> record only ("prepare the playlist"); the daily schedule
                       uses this so nothing starts playing on its own.
+        prefer_prepared=True -> for the instant button path: if today's playlist
+                      was already prepared (recorded to history by the daily /
+                      intraday run), play that straight away WITHOUT fetching
+                      feeds. Only when nothing is prepared yet does it fall
+                      through to a normal fetch-and-build. Ignored unless play.
         """
         cfg = _entry_config(hass)
         podcasts = cfg.get(CONF_PODCASTS) or []
@@ -1082,9 +1095,32 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         tz_name = tz_name or cfg.get(CONF_TIMEZONE)
         dry_run = bool(dry_run)
         play = bool(play)
+        prefer_prepared = bool(prefer_prepared)
         fetch_timeout = cfg.get(CONF_FETCH_TIMEOUT, DEFAULT_FETCH_TIMEOUT)
         max_lookback = cfg.get(CONF_MAX_LOOKBACK_DAYS, DEFAULT_MAX_LOOKBACK_DAYS)
         local_tz = _resolve_local_tz(hass, tz_name)
+
+        # Instant button path: play today's already-prepared playlist without
+        # fetching feeds. Avoids the ~20s feed-fetch delay when the daily /
+        # intraday prepare has already recorded today's playlist. Falls through
+        # to a full build only if nothing is prepared for today yet.
+        if play and not dry_run and prefer_prepared:
+            today_str = dt.datetime.now(local_tz).strftime(DATE_FMT)
+            today_eps = await _load_history_episodes(today_str)
+            if today_eps:
+                _LOGGER.info(
+                    "%s Instant play: queueing today's prepared playlist "
+                    "(%d episode(s)) without fetching feeds.",
+                    LOG_PREFIX,
+                    len(today_eps),
+                )
+                await _async_queue_media(player, today_eps, dry_run)
+                return
+            _LOGGER.info(
+                "%s Instant play requested but nothing prepared for today "
+                "yet; building from feeds.",
+                LOG_PREFIX,
+            )
 
         # Hold the build lock across the ENTIRE read-modify-write span of this
         # build -- from the HWM snapshot, through the feed I/O, to the history
@@ -1230,6 +1266,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             tz_name=call.data.get(ATTR_TZ),
             dry_run=call.data.get(ATTR_DRY_RUN, False),
             play=call.data.get(ATTR_PLAY, True),
+            prefer_prepared=call.data.get(ATTR_PREFER_PREPARED, False),
         )
 
     # --- Service: play_history -------------------------------------------

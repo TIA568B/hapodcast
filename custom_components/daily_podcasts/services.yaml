@@ -22,6 +22,17 @@ build_queue:
       default: true
       selector:
         boolean:
+    prefer_prepared:
+      name: Prefer prepared playlist
+      description: >
+        Instant play: if today's playlist was already prepared (by the daily or
+        intraday run), play it straight away without fetching feeds (avoids the
+        feed-fetch delay). Only builds from feeds if nothing is prepared yet.
+        Ignored unless play is on.
+      required: false
+      default: false
+      selector:
+        boolean:
     tz:
       name: Timezone
       description: IANA timezone name used to decide "today". Defaults to HA's local timezone.
