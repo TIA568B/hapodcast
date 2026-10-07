@@ -5,3 +5,4 @@ pyscript/podcast_history/
 # Python build artifacts
 __pycache__/
 *.pyc
+.agents/tasks/queue-hwm-audit.md
