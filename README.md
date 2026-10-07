@@ -123,6 +123,15 @@ HA `config/custom_components/` directory and restart. Home Assistant installs th
    second. It only falls back to a full fetch-and-build if nothing is prepared
    for today yet. This is the recommended flag for button / voice triggers.
 
+   `prefer_prepared` is also **resume-aware**, so pressing the button again
+   mid-listen doesn't drag you back to episode 1:
+   - If the player is **already playing** today's playlist (any episode in it),
+     it's left exactly as-is.
+   - If the player is **paused** on today's playlist (e.g. you paused to take a
+     call), it **resumes** from where you left off.
+   - Only when the player is idle/stopped, finished the queue, or playing
+     something else does it (re)queue today's playlist from the start.
+
 Failures are isolated: a single unreachable or malformed feed is logged and the
 rest of the list still plays. In prepare-only mode (`play: false`), if nothing
 is new since the last run it logs that and writes no history file.

@@ -1108,6 +1108,41 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             today_str = dt.datetime.now(local_tz).strftime(DATE_FMT)
             today_eps = await _load_history_episodes(today_str)
             if today_eps:
+                # Resume-aware: if the player is already on today's playlist,
+                # don't restart it from episode 1. Resume if paused, leave it
+                # alone if playing. Only (re)queue when it's idle/stopped or
+                # playing something that isn't today's playlist.
+                state = hass.states.get(player) if player else None
+                today_urls = {
+                    ep.get("audio_url") for ep in today_eps if ep.get("audio_url")
+                }
+                current_id = (
+                    state.attributes.get("media_content_id") if state else None
+                )
+                on_todays_playlist = bool(current_id) and current_id in today_urls
+                player_state = state.state if state else None
+
+                if on_todays_playlist and player_state == "playing":
+                    _LOGGER.info(
+                        "%s Instant play: already playing today's playlist; "
+                        "leaving it as-is.",
+                        LOG_PREFIX,
+                    )
+                    return
+                if on_todays_playlist and player_state == "paused":
+                    _LOGGER.info(
+                        "%s Instant play: resuming paused playback of today's "
+                        "playlist.",
+                        LOG_PREFIX,
+                    )
+                    await hass.services.async_call(
+                        "media_player",
+                        "media_play",
+                        {"entity_id": player},
+                        blocking=True,
+                    )
+                    return
+
                 _LOGGER.info(
                     "%s Instant play: queueing today's prepared playlist "
                     "(%d episode(s)) without fetching feeds.",

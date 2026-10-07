@@ -28,7 +28,9 @@ build_queue:
         Instant play: if today's playlist was already prepared (by the daily or
         intraday run), play it straight away without fetching feeds (avoids the
         feed-fetch delay). Only builds from feeds if nothing is prepared yet.
-        Ignored unless play is on.
+        Resume-aware: if the player is already playing today's playlist it is
+        left as-is, and if it is paused on today's playlist it is resumed rather
+        than restarted from the first episode. Ignored unless play is on.
       required: false
       default: false
       selector:
