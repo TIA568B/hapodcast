@@ -1553,12 +1553,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         cfg = _entry_config(hass)
         player = call.data.get(ATTR_PLAYER) or cfg.get(CONF_PLAYER)
 
-        # Build an audio_url -> {name, title} map from recent history so queue
-        # items (bare MP3 URLs) can show which podcast they are.
+        # Build an audio_url -> {name, title} map from recorded history so
+        # queue items (bare MP3 URLs) can show which podcast they are.
         base_dir = _history_base_dir()
         dates = await hass.async_add_executor_job(_list_history_dates, base_dir)
         url_map: dict[str, dict[str, str]] = {}
-        for date_str in dates[-7:]:  # recent week is plenty to label a queue
+        # Build the label map from ALL recorded history, not just the last few
+        # days: the unplayed backlog can reach back weeks, and every queued item
+        # should resolve to its podcast/episode title rather than falling back
+        # to a raw URL.
+        for date_str in dates:
             eps = await _load_history_episodes(date_str)
             for ep in eps:
                 url = ep.get("audio_url")
