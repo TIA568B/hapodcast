@@ -38,6 +38,7 @@ from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.event import (
+    async_track_state_change_event,
     async_track_time_change,
     async_track_time_interval,
 )
@@ -87,6 +88,8 @@ from .const import (
     HWM_STORAGE_KEY,
     HWM_STORAGE_VERSION,
     LOG_PREFIX,
+    PLAYED_STORAGE_KEY,
+    PLAYED_STORAGE_VERSION,
     MASS_DOMAIN,
     MASS_PLAY_MEDIA,
     SERVICE_BUILD_QUEUE,
@@ -833,6 +836,56 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hwm: dict[str, str] = (await hwm_store.async_load()) or {}
     hass.data[DOMAIN]["hwm"] = hwm
 
+    # Played-episode GUIDs: the set of episodes the user has already listened
+    # to. Used so the button queues only UNPLAYED recorded episodes (the whole
+    # outstanding backlog), and marks them played as playback advances.
+    played_store: Store = Store(
+        hass, PLAYED_STORAGE_VERSION, PLAYED_STORAGE_KEY
+    )
+    hass.data[DOMAIN]["played_store"] = played_store
+    played_loaded = (await played_store.async_load()) or {}
+    # Stored as {"guids": [...]}; tolerate a bare list too.
+    if isinstance(played_loaded, dict):
+        played_guids = set(played_loaded.get("guids", []) or [])
+    else:
+        played_guids = set(played_loaded or [])
+    hass.data[DOMAIN]["played"] = played_guids
+
+    async def _async_save_played() -> None:
+        await played_store.async_save(
+            {"guids": sorted(hass.data[DOMAIN].get("played", set()))}
+        )
+
+    def _ep_key(ep: dict) -> str:
+        """Stable per-episode key for the played set (guid, else audio_url)."""
+        return ep.get("guid") or ep.get("audio_url") or ""
+
+    async def _collect_unplayed_episodes() -> list[dict]:
+        """All recorded episodes not yet played, oldest day first, in order.
+
+        Walks every recorded history day (chronologically), concatenates each
+        day's episodes in their recorded order, de-duplicates by episode key
+        (so a repeated episode isn't queued twice), and drops any whose key is
+        in the played set. No look-back cap: the full outstanding backlog is
+        returned (the user can prune the queue if it's ever too large).
+        """
+        base_dir = _history_base_dir()
+        dates = await hass.async_add_executor_job(_list_history_dates, base_dir)
+        played = hass.data[DOMAIN].get("played", set())
+        out: list[dict] = []
+        seen: set[str] = set()
+        for date_str in dates:
+            eps = await _load_history_episodes(date_str)
+            for ep in eps:
+                key = _ep_key(ep)
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+                if key in played:
+                    continue
+                out.append(ep)
+        return out
+
     # Single lock serialising the whole read-modify-write span of a build
     # (daily/intraday/manual) and the set_podcasts HWM reconcile, so concurrent
     # runs can't clobber each other's HWM advances or race on the Store. Created
@@ -1100,39 +1153,39 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         max_lookback = cfg.get(CONF_MAX_LOOKBACK_DAYS, DEFAULT_MAX_LOOKBACK_DAYS)
         local_tz = _resolve_local_tz(hass, tz_name)
 
-        # Instant button path: play today's already-prepared playlist without
-        # fetching feeds. Avoids the ~20s feed-fetch delay when the daily /
-        # intraday prepare has already recorded today's playlist. Falls through
-        # to a full build only if nothing is prepared for today yet.
+        # Instant button path: play the whole UNPLAYED backlog from recorded
+        # history without fetching feeds. One button, same behaviour every day:
+        # after a normal day it's just today's new episodes; after a holiday
+        # it's everything you haven't heard. Episodes are marked played as
+        # playback advances (see the player listener), so each press queues
+        # only what's outstanding. Falls through to a full build only if there
+        # is nothing recorded yet to play.
         if play and not dry_run and prefer_prepared:
-            today_str = dt.datetime.now(local_tz).strftime(DATE_FMT)
-            today_eps = await _load_history_episodes(today_str)
-            if today_eps:
-                # Resume-aware: if the player is already on today's playlist,
-                # don't restart it from episode 1. Resume if paused, leave it
-                # alone if playing. Only (re)queue when it's idle/stopped or
-                # playing something that isn't today's playlist.
+            backlog = await _collect_unplayed_episodes()
+            if backlog:
+                # Resume-aware: if the player is already playing/paused on an
+                # episode that's part of the outstanding backlog, don't restart
+                # from the top. Resume if paused, leave alone if playing.
                 state = hass.states.get(player) if player else None
-                today_urls = {
-                    ep.get("audio_url") for ep in today_eps if ep.get("audio_url")
+                backlog_urls = {
+                    ep.get("audio_url") for ep in backlog if ep.get("audio_url")
                 }
                 current_id = (
                     state.attributes.get("media_content_id") if state else None
                 )
-                on_todays_playlist = bool(current_id) and current_id in today_urls
+                on_backlog = bool(current_id) and current_id in backlog_urls
                 player_state = state.state if state else None
 
-                if on_todays_playlist and player_state == "playing":
+                if on_backlog and player_state == "playing":
                     _LOGGER.info(
-                        "%s Instant play: already playing today's playlist; "
+                        "%s Instant play: already playing the backlog; "
                         "leaving it as-is.",
                         LOG_PREFIX,
                     )
                     return
-                if on_todays_playlist and player_state == "paused":
+                if on_backlog and player_state == "paused":
                     _LOGGER.info(
-                        "%s Instant play: resuming paused playback of today's "
-                        "playlist.",
+                        "%s Instant play: resuming paused playback.",
                         LOG_PREFIX,
                     )
                     await hass.services.async_call(
@@ -1144,15 +1197,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     return
 
                 _LOGGER.info(
-                    "%s Instant play: queueing today's prepared playlist "
-                    "(%d episode(s)) without fetching feeds.",
+                    "%s Instant play: queueing %d unplayed episode(s) from "
+                    "history without fetching feeds.",
                     LOG_PREFIX,
-                    len(today_eps),
+                    len(backlog),
                 )
-                await _async_queue_media(player, today_eps, dry_run)
+                await _async_queue_media(player, backlog, dry_run)
                 return
             _LOGGER.info(
-                "%s Instant play requested but nothing prepared for today "
+                "%s Instant play requested but no unplayed episodes recorded "
                 "yet; building from feeds.",
                 LOG_PREFIX,
             )
@@ -1581,6 +1634,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 cfg.get(CONF_INTRADAY_END_HOUR, DEFAULT_INTRADAY_END_HOUR)
             ),
             "podcast_count": len(cfg.get(CONF_PODCASTS) or []),
+            "unplayed_count": len(await _collect_unplayed_episodes()),
             "can_skip": is_sonos
             and hass.services.has_service("sonos", "play_queue"),
             "can_remove": is_sonos
@@ -1715,6 +1769,66 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
         await _run_build(play=False)
 
+    # --- Mark episodes played as playback advances -----------------------
+    async def _handle_player_state(event) -> None:
+        """Mark one of our episodes played when playback moves off it.
+
+        When the player's current media changes, the episode it was *just*
+        playing is treated as listened and its key added to the played set.
+        This covers normal advance-to-next, skipping forward, and reaching the
+        end of the queue. Only episodes we recognise (present in recorded
+        history) are marked, so unrelated playback (Spotify, radio) is ignored.
+        """
+        old = event.data.get("old_state")
+        new = event.data.get("new_state")
+        old_id = old.attributes.get("media_content_id") if old else None
+        new_id = new.attributes.get("media_content_id") if new else None
+        if not old_id or old_id == new_id:
+            return  # no change of track, nothing to mark
+
+        key = hass.data[DOMAIN].get("url_to_key", {}).get(old_id)
+        if not key:
+            # Map not primed yet, or the old track wasn't one of ours. Refresh
+            # the map once from history and retry (covers the first advance
+            # after a restart).
+            await _refresh_url_to_key()
+            key = hass.data[DOMAIN].get("url_to_key", {}).get(old_id)
+        if not key:
+            return
+
+        played = hass.data[DOMAIN].setdefault("played", set())
+        if key not in played:
+            played.add(key)
+            await _async_save_played()
+            _LOGGER.debug(
+                "%s Marked episode played: %s", LOG_PREFIX, old_id
+            )
+
+    async def _refresh_url_to_key() -> None:
+        """Rebuild the audio_url -> episode key map from recorded history."""
+        base_dir = _history_base_dir()
+        dates = await hass.async_add_executor_job(_list_history_dates, base_dir)
+        mapping: dict[str, str] = {}
+        for date_str in dates:
+            for ep in await _load_history_episodes(date_str):
+                url = ep.get("audio_url")
+                if url:
+                    mapping[url] = _ep_key(ep)
+        hass.data[DOMAIN]["url_to_key"] = mapping
+
+    def _track_player() -> None:
+        """(Re)subscribe the played-tracking listener to the configured player."""
+        cancel = hass.data[DOMAIN].pop("cancel_player_track", None)
+        if cancel:
+            cancel()
+        cfg = _entry_config(hass)
+        player = cfg.get(CONF_PLAYER)
+        if not player:
+            return
+        hass.data[DOMAIN]["cancel_player_track"] = async_track_state_change_event(
+            hass, [player], _handle_player_state
+        )
+
     def _arm_schedule() -> None:
         """(Re)arm the daily time trigger (and intraday interval) from options."""
         # Cancel any previous timers.
@@ -1785,6 +1899,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     _arm_schedule()
 
+    # Prime the url->key map and subscribe the played-tracking listener to the
+    # configured player so episodes are marked played as playback advances.
+    await _refresh_url_to_key()
+    _track_player()
+
     # Note: the options flow subclasses OptionsFlowWithReload, so Home Assistant
     # reloads this entry automatically when options change -- which re-runs
     # async_setup_entry and re-arms the schedule. We deliberately do NOT add an
@@ -1812,6 +1931,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     cancel_intraday = store.pop("cancel_intraday", None)
     if cancel_intraday:
         cancel_intraday()
+    cancel_player_track = store.pop("cancel_player_track", None)
+    if cancel_player_track:
+        cancel_player_track()
     store.pop("entry", None)
     async_remove_panel(hass)
     return True

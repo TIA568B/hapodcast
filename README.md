@@ -123,14 +123,22 @@ HA `config/custom_components/` directory and restart. Home Assistant installs th
    second. It only falls back to a full fetch-and-build if nothing is prepared
    for today yet. This is the recommended flag for button / voice triggers.
 
-   `prefer_prepared` is also **resume-aware**, so pressing the button again
-   mid-listen doesn't drag you back to episode 1:
-   - If the player is **already playing** today's playlist (any episode in it),
-     it's left exactly as-is.
-   - If the player is **paused** on today's playlist (e.g. you paused to take a
+   With `prefer_prepared`, the button plays your whole **unplayed backlog** from
+   recorded history, not just today — so it behaves the same every day. After a
+   normal day that's just today's new episodes; after a holiday it's everything
+   you haven't heard yet, oldest first. Episodes are marked **played as you
+   listen** (as playback advances past each one), so the next press only queues
+   what's still outstanding. There's no look-back cap — if a long absence builds
+   a large backlog, prune the queue from the Overview tab.
+
+   It's also **resume-aware**, so pressing again mid-listen doesn't drag you
+   back to the start:
+   - If the player is **already playing** an episode from the backlog, it's left
+     exactly as-is.
+   - If the player is **paused** on a backlog episode (e.g. you paused to take a
      call), it **resumes** from where you left off.
    - Only when the player is idle/stopped, finished the queue, or playing
-     something else does it (re)queue today's playlist from the start.
+     something else does it (re)queue the outstanding backlog from the start.
 
 Failures are isolated: a single unreachable or malformed feed is logged and the
 rest of the list still plays. In prepare-only mode (`play: false`), if nothing

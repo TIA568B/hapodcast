@@ -57,6 +57,12 @@ DEFAULT_INTRADAY_END_HOUR = 17
 HWM_STORAGE_KEY = "daily_podcasts_hwm"
 HWM_STORAGE_VERSION = 1
 
+# Played-episode storage: GUIDs of episodes the user has listened to (marked as
+# playback advances past / finishes them), so the button queues only unplayed
+# recorded episodes. helpers.storage.Store.
+PLAYED_STORAGE_KEY = "daily_podcasts_played"
+PLAYED_STORAGE_VERSION = 1
+
 # Options-flow step id (single settings form; podcasts are managed from the
 # "Daily Podcasts" sidebar panel).
 STEP_INIT = "init"
