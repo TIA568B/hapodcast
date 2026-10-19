@@ -228,7 +228,10 @@ The panel has two tabs:
   play queue, and at-a-glance info: whether automatic daily prepare is on, the
   **next scheduled prepare time**, the prepare time of day, and your podcast
   count. Each queued item shows its podcast and episode title, with the current
-  item highlighted. Each item has a **Skip to Podcast** button that jumps
+  item highlighted. Episodes you've already listened to are marked **Played**
+  (greyed and struck through), and a **Hide played** toggle collapses them so
+  the list shows only what's left to hear (the currently-playing item always
+  stays visible). Each item has a **Skip to Podcast** button that jumps
   playback straight to it, and a **✕** that removes just that item from the
   queue. (Both use the Sonos integration — `sonos.play_queue` and
   `sonos.remove_from_queue` — so on other players these controls are disabled.)

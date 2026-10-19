@@ -1570,7 +1570,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     url_map[url] = {
                         "name": ep.get("name", ""),
                         "title": ep.get("title", ""),
+                        "key": _ep_key(ep),
                     }
+
+        played_set = hass.data[DOMAIN].get("played", set())
 
         state = hass.states.get(player) if player else None
         now_playing: dict[str, Any] = {}
@@ -1612,6 +1615,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 queue_source = "live"
                 for idx, url in enumerate(ids):
                     meta = url_map.get(url, {})
+                    ep_key = meta.get("key") or url
                     queue.append(
                         {
                             "position": idx,  # 0-based (matches play_queue)
@@ -1619,6 +1623,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                             "title": meta.get("title", ""),
                             "media_content_id": url,
                             "current": bool(url) and url == current_id,
+                            "played": ep_key in played_set,
                         }
                     )
         else:

@@ -1,6 +1,6 @@
 /* Daily Podcasts full-screen Home Assistant sidebar panel. */
 
-const PANEL_VERSION = "1.14.0";
+const PANEL_VERSION = "1.15.0";
 
 // Prevent keystrokes typed into a form field from reaching Home Assistant's
 // global keyboard shortcuts (e.g. "c" quick-bar, "e", "a"). HA registers its
@@ -35,6 +35,7 @@ class DailyPodcastsPanel extends HTMLElement {
     this._overviewStatus = "";
     this._refreshTimer = null;
     this._started = false;
+    this._hidePlayed = false;
     this.attachShadow({ mode: "open" });
   }
 
@@ -389,6 +390,10 @@ class DailyPodcastsPanel extends HTMLElement {
         .qmeta .ttl { font-size:15px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
         .qactions { display:flex; align-items:center; gap:8px; white-space:nowrap; }
         .nowtag { font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--primary-color); font-weight:600; }
+        .qrow.played { opacity:.55; }
+        .qrow.played .ttl { text-decoration:line-through; }
+        .playedtag { font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--secondary-text-color); font-weight:600; }
+        .hideplayed { display:flex; align-items:center; gap:6px; font-size:13px; color:var(--secondary-text-color); white-space:nowrap; cursor:pointer; }
         @media (max-width:700px) { .page { padding:20px 16px 36px; } .fields { flex-direction:column; } .catchup { font-size:12px; } }
       </style>
     `;
@@ -508,18 +513,38 @@ class DailyPodcastsPanel extends HTMLElement {
     page.appendChild(infoCard);
 
     // Queue list
-    const toolbar = document.createElement("div"); toolbar.className = "toolbar";
-    const h = document.createElement("div"); h.style.fontWeight = "500"; h.textContent = "Queue";
-    toolbar.append(h, (() => { const s = document.createElement("span"); s.className = "spacer"; return s; })(),
-      this._button("Refresh", "button", () => this._loadOverview()));
-    page.appendChild(toolbar);
-
     const queue = ov.queue || [];
     const source = ov.queue_source;
+    const playedCount = queue.filter((it) => it.played && !it.current).length;
+
+    const toolbar = document.createElement("div"); toolbar.className = "toolbar";
+    const h = document.createElement("div"); h.style.fontWeight = "500"; h.textContent = "Queue";
+    toolbar.append(h, (() => { const s = document.createElement("span"); s.className = "spacer"; return s; })());
+    // "Hide played" toggle — only meaningful for a live queue with played items.
+    if (source === "live" && playedCount > 0) {
+      const toggle = document.createElement("label"); toggle.className = "hideplayed";
+      const cb = document.createElement("input"); cb.type = "checkbox"; cb.checked = this._hidePlayed;
+      cb.addEventListener("change", (e) => { this._hidePlayed = e.target.checked; this._render(); });
+      toggle.append(cb, document.createTextNode(`Hide played (${playedCount})`));
+      toolbar.appendChild(toggle);
+    }
+    toolbar.appendChild(this._button("Refresh", "button", () => this._loadOverview()));
+    page.appendChild(toolbar);
+
     const list = document.createElement("section"); list.className = "list";
 
     if (source === "live") {
-      queue.forEach((item) => list.appendChild(this._renderQueueRow(item, ov.can_skip, ov.can_remove)));
+      // Always keep the currently-playing item visible even when hiding played.
+      const visible = this._hidePlayed
+        ? queue.filter((it) => !it.played || it.current)
+        : queue;
+      if (!visible.length) {
+        const empty = document.createElement("div"); empty.className = "empty";
+        empty.textContent = "All queued episodes have been played.";
+        list.appendChild(empty);
+      } else {
+        visible.forEach((item) => list.appendChild(this._renderQueueRow(item, ov.can_skip, ov.can_remove)));
+      }
     } else if (source === "empty") {
       const empty = document.createElement("div"); empty.className = "empty";
       empty.textContent = "The queue is empty. Press the Play Daily Podcasts button to build today's queue.";
@@ -543,8 +568,9 @@ class DailyPodcastsPanel extends HTMLElement {
   }
 
   _renderQueueRow(item, canSkip, canRemove) {
+    const isPlayed = item.played && !item.current;
     const el = document.createElement("div");
-    el.className = `qrow${item.current ? " current" : ""}`;
+    el.className = `qrow${item.current ? " current" : ""}${isPlayed ? " played" : ""}`;
     const num = document.createElement("div"); num.className = "qnum"; num.textContent = String((item.position ?? 0) + 1); el.appendChild(num);
     const meta = document.createElement("div"); meta.className = "qmeta";
     if (item.podcast) { const pod = document.createElement("div"); pod.className = "pod"; pod.textContent = item.podcast; meta.appendChild(pod); }
@@ -554,7 +580,10 @@ class DailyPodcastsPanel extends HTMLElement {
     const actions = document.createElement("div"); actions.className = "qactions";
     if (item.current) {
       const tag = document.createElement("span"); tag.className = "nowtag"; tag.textContent = "Playing"; actions.appendChild(tag);
-    } else {
+    } else if (isPlayed) {
+      const tag = document.createElement("span"); tag.className = "playedtag"; tag.textContent = "Played"; actions.appendChild(tag);
+    }
+    if (!item.current) {
       const skip = this._button("Skip to Podcast", "button", () => this._skipTo(item.position), !canSkip);
       if (!canSkip) skip.title = "Requires the Sonos integration";
       actions.appendChild(skip);
