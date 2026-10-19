@@ -1163,22 +1163,36 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if play and not dry_run and prefer_prepared:
             backlog = await _collect_unplayed_episodes()
             if backlog:
-                # Resume-aware: if the player is already playing/paused on an
-                # episode that's part of the outstanding backlog, don't restart
-                # from the top. Resume if paused, leave alone if playing.
+                # Resume-aware, but only when the LIVE queue genuinely already
+                # holds the outstanding backlog -- otherwise a stale/small queue
+                # left over from a previous session (which merely contains a
+                # backlog episode) would be mistaken for "already playing the
+                # backlog" and we'd never queue the rest. Discriminator: the
+                # current track is a backlog episode AND every outstanding
+                # backlog episode is already present in the live Sonos queue.
                 state = hass.states.get(player) if player else None
-                backlog_urls = {
-                    ep.get("audio_url") for ep in backlog if ep.get("audio_url")
-                }
                 current_id = (
                     state.attributes.get("media_content_id") if state else None
                 )
-                on_backlog = bool(current_id) and current_id in backlog_urls
                 player_state = state.state if state else None
+
+                backlog_urls = {
+                    ep.get("audio_url") for ep in backlog if ep.get("audio_url")
+                }
+                live_ids = await _sonos_queue_ids(player) if player else None
+                live_set = set(live_ids or [])
+                # "On the backlog queue" only if the current track is a backlog
+                # episode and the live queue already covers the whole backlog
+                # (nothing outstanding is missing from it).
+                current_is_backlog = bool(current_id) and current_id in backlog_urls
+                queue_covers_backlog = bool(live_set) and backlog_urls.issubset(
+                    live_set
+                )
+                on_backlog = current_is_backlog and queue_covers_backlog
 
                 if on_backlog and player_state == "playing":
                     _LOGGER.info(
-                        "%s Instant play: already playing the backlog; "
+                        "%s Instant play: already playing the full backlog; "
                         "leaving it as-is.",
                         LOG_PREFIX,
                     )
