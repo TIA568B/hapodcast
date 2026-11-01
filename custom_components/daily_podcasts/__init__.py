@@ -525,6 +525,21 @@ def _select_unplayed_backlog(
     return out
 
 
+def _drop_played_episodes(
+    episodes: list[dict[str, Any]], played: set[str]
+) -> list[dict[str, Any]]:
+    """Return episodes whose key is not in the played set, order preserved.
+
+    Used by every history-replay path (the instant-play backlog AND the
+    "nothing new, play today's prepared playlist" fallback) so an episode the
+    user already heard or explicitly removed from the queue is never re-queued
+    from history. Without this on the prepared-playlist fallback, removing an
+    item and pressing play again re-queues it straight from today's recorded
+    history (the reported "removed items reappear" bug).
+    """
+    return [ep for ep in episodes if _episode_key(ep) not in played]
+
+
 def _should_mark_played(
     old_id: str | None,
     new_id: str | None,
@@ -1401,10 +1416,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 # prepared and recorded for today, rather than doing nothing.
                 if play and not dry_run:
                     today_eps = await _load_history_episodes(today_str)
+                    # Drop episodes the user already heard or removed from the
+                    # queue, so replaying today's prepared playlist doesn't
+                    # resurrect them (the reported "removed items reappear"
+                    # bug). An episode is marked played when playback advances
+                    # past it or when it's removed via the panel.
+                    played = hass.data[DOMAIN].get("played", set())
+                    today_eps = _drop_played_episodes(today_eps, played)
                     if today_eps:
                         _LOGGER.info(
                             "%s Nothing new to build; playing today's prepared "
-                            "playlist from history (%d episode(s)).",
+                            "playlist from history (%d unplayed episode(s)).",
                             LOG_PREFIX,
                             len(today_eps),
                         )

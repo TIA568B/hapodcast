@@ -14,6 +14,7 @@ exercises the exact code that runs at runtime.
 """
 
 from custom_components.daily_podcasts import (
+    _drop_played_episodes,
     _episode_is_configured,
     _episode_key,
     _select_unplayed_backlog,
@@ -130,6 +131,34 @@ def test_backlog_empty_when_all_played_or_removed():
     ]
     out = _select_unplayed_backlog(days, {"g1"}, {"f1"}, {"A"})
     assert out == []
+
+
+# --- _drop_played_episodes --------------------------------------------------
+# Covers the prepared-playlist replay path: replaying today's recorded
+# playlist must not resurrect an episode the user removed from the queue
+# (which marks it played). This is the second "removed items reappear" channel.
+
+
+def test_drop_played_removes_played_keeps_order():
+    eps = [_ep("A", guid="g1"), _ep("B", guid="g2"), _ep("C", guid="g3")]
+    out = _drop_played_episodes(eps, {"g2"})
+    assert [e["guid"] for e in out] == ["g1", "g3"]
+
+
+def test_drop_played_all_played_returns_empty():
+    eps = [_ep("A", guid="g1"), _ep("B", guid="g2")]
+    assert _drop_played_episodes(eps, {"g1", "g2"}) == []
+
+
+def test_drop_played_none_played_returns_all():
+    eps = [_ep("A", guid="g1"), _ep("B", guid="g2")]
+    assert _drop_played_episodes(eps, set()) == eps
+
+
+def test_drop_played_matches_on_audio_url_key():
+    eps = [_ep("A", audio_url="u1"), _ep("B", audio_url="u2")]
+    out = _drop_played_episodes(eps, {"u1"})
+    assert [e["audio_url"] for e in out] == ["u2"]
 
 
 # --- _should_mark_played ----------------------------------------------------
