@@ -178,6 +178,34 @@ remove_from_queue:
           max: 500
           mode: box
 
+reorder_queue:
+  name: Reorder the queue
+  description: >
+    Reorder the live queue to a new order. Sonos has no move-queue-item action,
+    so this clears and rebuilds the queue in the requested order, keeping the
+    currently-playing episode playing (restarted from its beginning). The order
+    must contain exactly the media_content_ids currently in the queue. Used by
+    the Daily Podcasts panel Overview tab (drag to reorder).
+  fields:
+    player:
+      name: Player
+      description: Sonos media_player to control. Defaults to the configured player.
+      required: false
+      example: media_player.office
+      selector:
+        entity:
+          domain: media_player
+    order:
+      name: Order
+      description: >
+        The full ordered list of media_content_ids the queue should have after
+        reordering. Must be a permutation of the current queue's items.
+      required: true
+      example: >
+        ["http://audio/ep2.mp3", "http://audio/ep1.mp3", "http://audio/ep3.mp3"]
+      selector:
+        object:
+
 list_podcasts:
   name: List podcasts
   description: >

@@ -1,6 +1,6 @@
 /* Daily Podcasts full-screen Home Assistant sidebar panel. */
 
-const PANEL_VERSION = "1.15.0";
+const PANEL_VERSION = "1.16.0";
 
 // Prevent keystrokes typed into a form field from reaching Home Assistant's
 // global keyboard shortcuts (e.g. "c" quick-bar, "e", "a"). HA registers its
@@ -36,6 +36,13 @@ class DailyPodcastsPanel extends HTMLElement {
     this._refreshTimer = null;
     this._started = false;
     this._hidePlayed = false;
+    // Live-queue reorder state: a local copy of the queue's media_content_ids
+    // the user is dragging into a new order, plus the drag source index. While
+    // a pending reorder exists, periodic refresh is paused so it doesn't wipe
+    // the user's in-progress arrangement.
+    this._queueOrder = null; // string[] of media_content_ids, or null (= live)
+    this._queueDragIndex = null;
+    this._applyingOrder = false;
     this.attachShadow({ mode: "open" });
   }
 
@@ -102,8 +109,12 @@ class DailyPodcastsPanel extends HTMLElement {
   _startRefresh() {
     this._stopRefresh();
     // Refresh now-playing/queue periodically while the Overview tab is open.
+    // Skip while the user has a pending drag reorder so a refresh doesn't wipe
+    // their in-progress arrangement.
     this._refreshTimer = window.setInterval(() => {
-      if (this._tab === "overview") this._loadOverview(true);
+      if (this._tab === "overview" && !this._queueOrder) {
+        this._loadOverview(true);
+      }
     }, 10000);
   }
 
@@ -161,10 +172,95 @@ class DailyPodcastsPanel extends HTMLElement {
       await this._hass.callService("daily_podcasts", "remove_from_queue", {
         position,
       });
+      // Removing changes the queue, so drop any pending drag order.
+      this._queueOrder = null;
       // Give Sonos a moment to re-index the queue, then refresh.
       window.setTimeout(() => this._loadOverview(true), 1200);
     } catch (error) {
       this._overviewStatus = `Remove failed: ${error.message || error}`;
+      this._render();
+    }
+  }
+
+  // --- Live-queue reorder (drag & drop) --------------------------------
+  // The live queue is rendered in this order: the user's pending arrangement
+  // if one exists, otherwise the live order from the backend. _liveQueueIds()
+  // is the backend's current order; _displayQueue() applies the pending order.
+  _liveQueueIds() {
+    const queue = (this._overview && this._overview.queue) || [];
+    return queue.map((it) => it.media_content_id);
+  }
+
+  _displayQueue() {
+    const queue = (this._overview && this._overview.queue) || [];
+    if (!this._queueOrder) return queue;
+    const byId = new Map(queue.map((it) => [it.media_content_id, it]));
+    const ordered = [];
+    // Pending order first (only ids still present), then any new live ids.
+    for (const id of this._queueOrder) {
+      if (byId.has(id)) {
+        ordered.push(byId.get(id));
+        byId.delete(id);
+      }
+    }
+    for (const it of queue) if (byId.has(it.media_content_id)) ordered.push(it);
+    return ordered;
+  }
+
+  _orderChanged() {
+    if (!this._queueOrder) return false;
+    const live = this._liveQueueIds();
+    const shown = this._displayQueue().map((it) => it.media_content_id);
+    if (shown.length !== live.length) return true;
+    return shown.some((id, i) => id !== live[i]);
+  }
+
+  _onQueueDragStart(index, event) {
+    this._queueDragIndex = index;
+    if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+  }
+
+  _onQueueDragOver(event) {
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+  }
+
+  _onQueueDrop(index, event) {
+    event.preventDefault();
+    const from = this._queueDragIndex;
+    this._queueDragIndex = null;
+    if (from === null || from === index) return;
+    // Seed the pending order from what's currently shown, then move the item.
+    const ids = this._displayQueue().map((it) => it.media_content_id);
+    const [moved] = ids.splice(from, 1);
+    ids.splice(index, 0, moved);
+    this._queueOrder = ids;
+    this._render();
+  }
+
+  _resetQueueOrder() {
+    this._queueOrder = null;
+    this._render();
+  }
+
+  async _applyQueueOrder() {
+    if (!this._hass || !this._queueOrder || this._applyingOrder) return;
+    const order = this._displayQueue().map((it) => it.media_content_id);
+    this._applyingOrder = true;
+    this._overviewStatus = "Applying new order…";
+    this._render();
+    try {
+      await this._hass.callService("daily_podcasts", "reorder_queue", {
+        order,
+      });
+      this._queueOrder = null;
+      this._overviewStatus = "";
+      // Give Sonos a moment to rebuild the queue, then refresh.
+      window.setTimeout(() => this._loadOverview(true), 1500);
+    } catch (error) {
+      this._overviewStatus = `Reorder failed: ${error.message || error}`;
+    } finally {
+      this._applyingOrder = false;
       this._render();
     }
   }
@@ -384,6 +480,8 @@ class DailyPodcastsPanel extends HTMLElement {
         .info .k { color:var(--secondary-text-color); font-size:12px; text-transform:uppercase; letter-spacing:.05em; }
         .qrow { display:flex; align-items:center; gap:14px; padding:12px 14px; background:var(--card-background-color); border:1px solid var(--divider-color,#ddd); border-radius:10px; box-sizing:border-box; }
         .qrow.current { border-color:var(--primary-color); box-shadow:0 0 0 1px var(--primary-color) inset; }
+        .qrow.dragging { opacity:.45; }
+        .qrow[draggable=true] { cursor:grab; }
         .qnum { width:26px; text-align:center; color:var(--secondary-text-color); font-variant-numeric:tabular-nums; }
         .qmeta { flex:1; min-width:0; }
         .qmeta .pod { font-size:13px; color:var(--secondary-text-color); }
@@ -516,34 +614,60 @@ class DailyPodcastsPanel extends HTMLElement {
     const queue = ov.queue || [];
     const source = ov.queue_source;
     const playedCount = queue.filter((it) => it.played && !it.current).length;
+    // Reorder is only offered for a live Sonos queue with >1 item. While a
+    // pending order is being hidden/played-filtered the drag is disabled, since
+    // dragging a filtered subset can't express the full order.
+    const canReorder = !!ov.can_reorder && !this._hidePlayed;
+    const pendingReorder = this._orderChanged();
 
     const toolbar = document.createElement("div"); toolbar.className = "toolbar";
     const h = document.createElement("div"); h.style.fontWeight = "500"; h.textContent = "Queue";
     toolbar.append(h, (() => { const s = document.createElement("span"); s.className = "spacer"; return s; })());
+    if (pendingReorder) {
+      // Apply / Reset the dragged order, mirroring the management tab's
+      // local-edit-then-save flow.
+      toolbar.appendChild(
+        this._button("Apply order", "button primary", () => this._applyQueueOrder(), this._applyingOrder)
+      );
+      toolbar.appendChild(
+        this._button("Reset", "button", () => this._resetQueueOrder(), this._applyingOrder)
+      );
+    }
     // "Hide played" toggle — only meaningful for a live queue with played items.
-    if (source === "live" && playedCount > 0) {
+    // Hidden while a reorder is pending so the user doesn't lose their drag.
+    if (source === "live" && playedCount > 0 && !pendingReorder) {
       const toggle = document.createElement("label"); toggle.className = "hideplayed";
       const cb = document.createElement("input"); cb.type = "checkbox"; cb.checked = this._hidePlayed;
       cb.addEventListener("change", (e) => { this._hidePlayed = e.target.checked; this._render(); });
       toggle.append(cb, document.createTextNode(`Hide played (${playedCount})`));
       toolbar.appendChild(toggle);
     }
-    toolbar.appendChild(this._button("Refresh", "button", () => this._loadOverview()));
+    toolbar.appendChild(this._button("Refresh", "button", () => this._loadOverview(), this._applyingOrder));
     page.appendChild(toolbar);
+
+    if (canReorder) {
+      const hint = document.createElement("div");
+      hint.className = "hint"; hint.style.marginTop = "0"; hint.style.marginBottom = "12px";
+      hint.textContent = "Drag queue items to reorder, then Apply. The current episode keeps playing (restarted from its beginning).";
+      page.appendChild(hint);
+    }
 
     const list = document.createElement("section"); list.className = "list";
 
     if (source === "live") {
+      const displayed = this._displayQueue();
       // Always keep the currently-playing item visible even when hiding played.
       const visible = this._hidePlayed
-        ? queue.filter((it) => !it.played || it.current)
-        : queue;
+        ? displayed.filter((it) => !it.played || it.current)
+        : displayed;
       if (!visible.length) {
         const empty = document.createElement("div"); empty.className = "empty";
         empty.textContent = "All queued episodes have been played.";
         list.appendChild(empty);
       } else {
-        visible.forEach((item) => list.appendChild(this._renderQueueRow(item, ov.can_skip, ov.can_remove)));
+        visible.forEach((item, idx) =>
+          list.appendChild(this._renderQueueRow(item, ov.can_skip, ov.can_remove, canReorder, idx))
+        );
       }
     } else if (source === "empty") {
       const empty = document.createElement("div"); empty.className = "empty";
@@ -567,11 +691,20 @@ class DailyPodcastsPanel extends HTMLElement {
     }
   }
 
-  _renderQueueRow(item, canSkip, canRemove) {
+  _renderQueueRow(item, canSkip, canRemove, canReorder = false, displayIndex = 0) {
     const isPlayed = item.played && !item.current;
     const el = document.createElement("div");
     el.className = `qrow${item.current ? " current" : ""}${isPlayed ? " played" : ""}`;
-    const num = document.createElement("div"); num.className = "qnum"; num.textContent = String((item.position ?? 0) + 1); el.appendChild(num);
+    if (canReorder) {
+      el.draggable = true;
+      el.addEventListener("dragstart", (event) => { el.classList.add("dragging"); this._onQueueDragStart(displayIndex, event); });
+      el.addEventListener("dragend", () => el.classList.remove("dragging"));
+      el.addEventListener("dragover", (event) => this._onQueueDragOver(event));
+      el.addEventListener("drop", (event) => this._onQueueDrop(displayIndex, event));
+      const handle = document.createElement("div"); handle.className = "handle"; handle.title = "Drag to reorder"; handle.textContent = "⠿";
+      el.appendChild(handle);
+    }
+    const num = document.createElement("div"); num.className = "qnum"; num.textContent = String(displayIndex + 1); el.appendChild(num);
     const meta = document.createElement("div"); meta.className = "qmeta";
     if (item.podcast) { const pod = document.createElement("div"); pod.className = "pod"; pod.textContent = item.podcast; meta.appendChild(pod); }
     const ttl = document.createElement("div"); ttl.className = "ttl"; ttl.textContent = item.title || item.media_content_id || "(unknown)"; ttl.title = ttl.textContent; meta.appendChild(ttl);

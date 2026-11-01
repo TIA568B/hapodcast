@@ -74,6 +74,7 @@ SERVICE_PLAY_HISTORY = "play_history"
 SERVICE_GET_QUEUE = "get_queue"
 SERVICE_SKIP_TO = "skip_to"
 SERVICE_REMOVE_FROM_QUEUE = "remove_from_queue"
+SERVICE_REORDER_QUEUE = "reorder_queue"
 
 # Service call fields
 ATTR_PLAYER = "player"
@@ -89,6 +90,10 @@ ATTR_END = "end"
 ATTR_SINCE = "since"
 ATTR_DAYS = "days"
 ATTR_POSITION = "position"  # 0-based queue index for skip_to
+# reorder_queue: the full ordered list of media_content_ids the queue should
+# have after reordering (identity by content, not position, so stale panel
+# indices can't act on the wrong item).
+ATTR_ORDER = "order"
 
 # Music Assistant service used to queue media.
 MASS_DOMAIN = "mass"

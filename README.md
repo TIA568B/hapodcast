@@ -233,15 +233,19 @@ The panel has two tabs:
   the list shows only what's left to hear (the currently-playing item always
   stays visible). Each item has a **Skip to Podcast** button that jumps
   playback straight to it, and a **✕** that removes just that item from the
-  queue. (Both use the Sonos integration — `sonos.play_queue` and
-  `sonos.remove_from_queue` — so on other players these controls are disabled.)
+  queue. You can also **drag queue items to reorder** them (same drag handle as
+  the Management tab); drag into the order you want, then **Apply order**. The
+  currently-playing episode keeps playing (restarted from its beginning, since
+  Sonos rebuilds the queue to reorder). (These use the Sonos integration —
+  `sonos.play_queue` and `sonos.remove_from_queue` — so on other players they
+  are disabled.)
 - **Management** — add, remove, edit, and drag-reorder podcasts (and toggle each
   one's catch-up) on a single screen, then save the whole list atomically.
 
 The panel uses the same backend services that are available for automations:
 `daily_podcasts.list_podcasts`, `daily_podcasts.set_podcasts`,
-`daily_podcasts.get_queue`, `daily_podcasts.skip_to`, and
-`daily_podcasts.remove_from_queue`.
+`daily_podcasts.get_queue`, `daily_podcasts.skip_to`,
+`daily_podcasts.remove_from_queue`, and `daily_podcasts.reorder_queue`.
 
 > **Use the native Sonos `media_player` entity.** The live queue, Skip, and
 > Remove controls use the Sonos integration's own queue actions, which only

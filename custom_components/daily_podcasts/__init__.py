@@ -92,11 +92,13 @@ from .const import (
     PLAYED_STORAGE_VERSION,
     MASS_DOMAIN,
     MASS_PLAY_MEDIA,
+    ATTR_ORDER,
     SERVICE_BUILD_QUEUE,
     SERVICE_GET_QUEUE,
     SERVICE_LIST_PODCASTS,
     SERVICE_PLAY_HISTORY,
     SERVICE_REMOVE_FROM_QUEUE,
+    SERVICE_REORDER_QUEUE,
     SERVICE_SET_PODCASTS,
     SERVICE_SKIP_TO,
 )
@@ -186,6 +188,14 @@ REMOVE_FROM_QUEUE_SCHEMA = vol.Schema(
     {
         vol.Optional(ATTR_PLAYER): cv.entity_id,
         vol.Required(ATTR_POSITION): vol.All(int, vol.Range(min=0)),
+    }
+)
+
+REORDER_QUEUE_SCHEMA = vol.Schema(
+    {
+        vol.Optional(ATTR_PLAYER): cv.entity_id,
+        # The full ordered list of media_content_ids the queue should have.
+        vol.Required(ATTR_ORDER): vol.All(cv.ensure_list, [cv.string]),
     }
 )
 
@@ -538,6 +548,49 @@ def _drop_played_episodes(
     history (the reported "removed items reappear" bug).
     """
     return [ep for ep in episodes if _episode_key(ep) not in played]
+
+
+def _plan_reorder(
+    live_ids: list[str],
+    requested_order: list[str],
+    current_id: str | None,
+) -> tuple[list[str], int]:
+    """Compute the queue to rebuild for a reorder, and where to start playing.
+
+    Sonos has no "move queue item" action, so a reorder is a clear + rebuild of
+    the queue in the requested order. This pure helper decides the final order
+    and the start position:
+
+    - ``requested_order`` must be a permutation of the live queue's ids (same
+      set, any order). This is validated by the caller; here we assume it holds
+      and simply filter the requested list to ids that are actually live
+      (dropping any unknown id) and append any live id the request omitted, so
+      the rebuilt queue never silently loses a track.
+    - The start index is the position of the currently-playing track in the NEW
+      order, so playback continues on the same episode after the rebuild (Sonos
+      restarts that track from its beginning -- it can't preserve mid-track
+      position across a clear+rebuild). If nothing is playing, or the current
+      track isn't in the queue, start at 0.
+
+    Returns (final_order, start_index).
+    """
+    live_set = set(live_ids)
+    seen: set[str] = set()
+    final: list[str] = []
+    for mid in requested_order:
+        if mid in live_set and mid not in seen:
+            final.append(mid)
+            seen.add(mid)
+    # Append any live id the request left out (defensive: never drop a track).
+    for mid in live_ids:
+        if mid not in seen:
+            final.append(mid)
+            seen.add(mid)
+
+    start = 0
+    if current_id and current_id in final:
+        start = final.index(current_id)
+    return final, start
 
 
 def _should_mark_played(
@@ -1783,6 +1836,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             and hass.services.has_service(
                 "sonos", "remove_from_queue"
             ),
+            # Reordering rebuilds the queue (clear + re-enqueue), so it needs a
+            # live Sonos queue with at least two items to be meaningful.
+            "can_reorder": queue_source == "live" and len(queue) > 1,
         }
 
     async def handle_skip_to(call: ServiceCall) -> None:
@@ -1882,6 +1938,144 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             player,
         )
 
+    async def handle_reorder_queue(call: ServiceCall) -> None:
+        """Reorder the live queue to a requested order of media_content_ids.
+
+        Sonos has no move-queue-item action, so reordering is a clear + rebuild
+        of the queue in the new order (the same mechanism used to build it).
+        The request carries the full ordered list of media_content_ids (identity
+        by content, not position, so a stale panel index can't act on the wrong
+        item). The request must be a permutation of the live queue; if the queue
+        changed underneath the panel the call is rejected so the user refreshes
+        rather than rebuilding a queue that no longer matches.
+
+        Playback continues on the currently-playing episode (Sonos restarts that
+        track from its start -- a clear+rebuild can't preserve mid-track
+        position), with the reordered remainder after it.
+        """
+        cfg = _entry_config(hass)
+        player = call.data.get(ATTR_PLAYER) or cfg.get(CONF_PLAYER)
+        requested = list(call.data.get(ATTR_ORDER) or [])
+
+        if not requested:
+            raise HomeAssistantError(
+                f"{LOG_PREFIX} reorder_queue: no order provided."
+            )
+
+        # Reordering rebuilds the queue, so it needs a controllable Sonos queue.
+        live_ids = await _sonos_queue_ids(player)
+        if live_ids is None:
+            raise HomeAssistantError(
+                f"{LOG_PREFIX} Reordering the queue requires a native Sonos "
+                f"player; '{player}' isn't one (or its queue can't be read). "
+                "Set the player to your Sonos media_player entity."
+            )
+        if not live_ids:
+            raise HomeAssistantError(
+                f"{LOG_PREFIX} The queue is empty; nothing to reorder."
+            )
+
+        # The request must be a permutation of the live queue (same set of
+        # ids). If it isn't, the queue changed under the panel -> reject and ask
+        # the user to refresh, rather than silently rebuilding a stale queue.
+        if set(requested) != set(live_ids) or len(requested) != len(live_ids):
+            raise HomeAssistantError(
+                f"{LOG_PREFIX} The queue changed since the panel loaded it; "
+                "refresh the Overview and try reordering again."
+            )
+
+        state = hass.states.get(player) if player else None
+        current_id = (
+            state.attributes.get("media_content_id") if state else None
+        )
+        player_state = state.state if state else None
+
+        final_order, start = _plan_reorder(live_ids, requested, current_id)
+
+        if final_order == live_ids:
+            _LOGGER.info(
+                "%s reorder_queue: requested order matches current queue; "
+                "nothing to do.",
+                LOG_PREFIX,
+            )
+            return
+
+        # Rebuild the Sonos queue in the new order: clear, then enqueue each id
+        # (first "play", rest "add") -- the same Sonos-correct pattern used to
+        # build the queue initially.
+        _LOGGER.info(
+            "%s reorder_queue: rebuilding %s queue (%d item(s)) in new order; "
+            "resuming at position %d.",
+            LOG_PREFIX,
+            player,
+            len(final_order),
+            start,
+        )
+
+        try:
+            await hass.services.async_call(
+                "media_player",
+                "clear_playlist",
+                {"entity_id": player},
+                blocking=True,
+            )
+        except Exception as err:  # noqa: BLE001 - not fatal; continue
+            _LOGGER.debug(
+                "%s reorder_queue: clear_playlist failed on %s (%s); "
+                "continuing.",
+                LOG_PREFIX,
+                player,
+                err,
+            )
+
+        for index, media_id in enumerate(final_order):
+            enqueue = "play" if index == 0 else "add"
+            await hass.services.async_call(
+                "media_player",
+                "play_media",
+                {
+                    "entity_id": player,
+                    "media_content_id": media_id,
+                    "media_content_type": "music",
+                    "enqueue": enqueue,
+                },
+                blocking=True,
+            )
+            if index == 0 and len(final_order) > 1:
+                # Let Sonos establish the queue before appending the rest.
+                await asyncio.sleep(3)
+
+        # Resume on the track that was playing, at its new position, so a
+        # reorder doesn't jump the user to a different episode. If the queue was
+        # paused/idle, leave it paused at that position rather than forcing play.
+        if start > 0 and hass.services.has_service("sonos", "play_queue"):
+            await hass.services.async_call(
+                "sonos",
+                "play_queue",
+                {"entity_id": player, "queue_position": start},
+                blocking=True,
+            )
+        if player_state != "playing":
+            try:
+                await hass.services.async_call(
+                    "media_player",
+                    "media_pause",
+                    {"entity_id": player},
+                    blocking=True,
+                )
+            except Exception as err:  # noqa: BLE001 - best effort
+                _LOGGER.debug(
+                    "%s reorder_queue: could not pause after rebuild on %s "
+                    "(%s).",
+                    LOG_PREFIX,
+                    player,
+                    err,
+                )
+
+        _LOGGER.info(
+            "%s reorder_queue: queue reordered on %s.", LOG_PREFIX, player
+        )
+
     # Register services once (they read the live entry config each call).
     if not hass.services.has_service(DOMAIN, SERVICE_BUILD_QUEUE):
         hass.services.async_register(
@@ -1912,6 +2106,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             SERVICE_REMOVE_FROM_QUEUE,
             handle_remove_from_queue,
             schema=REMOVE_FROM_QUEUE_SCHEMA,
+        )
+    if not hass.services.has_service(DOMAIN, SERVICE_REORDER_QUEUE):
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_REORDER_QUEUE,
+            handle_reorder_queue,
+            schema=REORDER_QUEUE_SCHEMA,
         )
 
     # --- Daily scheduler (internal; no automations.yaml needed) ----------
