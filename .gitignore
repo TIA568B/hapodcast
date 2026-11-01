@@ -6,3 +6,7 @@ pyscript/podcast_history/
 __pycache__/
 *.pyc
 .agents/tasks/queue-hwm-audit.md
+# Test / dev environment
+.venv/
+.pytest_cache/
+*.egg-info/

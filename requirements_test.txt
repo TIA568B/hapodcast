@@ -1,0 +1,13 @@
+# Test harness for the Daily Podcast Queue integration.
+#
+# Setup:
+#   python3 -m venv .venv
+#   . .venv/bin/activate
+#   pip install -r requirements_test.txt
+#   pytest
+#
+# pytest-homeassistant-custom-component pulls in a pinned Home Assistant plus
+# pytest/pytest-asyncio, so the integration module (which imports HA at module
+# scope) can be imported and its pure helpers tested without network access.
+pytest-homeassistant-custom-component==0.13.316
+feedparser==6.0.14

@@ -465,6 +465,93 @@ def _history_latest_by_feed_url(base_dir: str, days: int) -> dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
+# Backlog selection helpers (pure; used by the instant-play button path)
+# ---------------------------------------------------------------------------
+
+
+def _episode_key(ep: dict[str, Any]) -> str:
+    """Stable per-episode key for the played set (guid, else audio_url)."""
+    return ep.get("guid") or ep.get("audio_url") or ""
+
+
+def _episode_is_configured(
+    ep: dict[str, Any],
+    configured_urls: set[str],
+    configured_names: set[str],
+) -> bool:
+    """Whether a recorded episode still belongs to a configured podcast.
+
+    Removing a podcast from the list means its stale history must not resurface
+    in the unplayed backlog (the reported bug: a dropped show like Cyberwire
+    kept reappearing). Correlation is by feed_url (the stable identity) with a
+    name fallback for pre-upgrade history entries written before feed_url was
+    recorded. An episode matching neither belongs to a removed feed.
+    """
+    url = ep.get(CONF_FEED_URL) or ep.get("feed_url")
+    if url:
+        return url in configured_urls
+    name = ep.get("name")
+    return bool(name) and name in configured_names
+
+
+def _select_unplayed_backlog(
+    history_days: list[list[dict[str, Any]]],
+    played: set[str],
+    configured_urls: set[str],
+    configured_names: set[str],
+) -> list[dict[str, Any]]:
+    """Flatten recorded history into the ordered unplayed backlog.
+
+    ``history_days`` is each recorded day's episode list, oldest day first, in
+    recorded order. Concatenates them, de-dupes by episode key (a repeated
+    episode is queued once), drops anything already played, and drops episodes
+    whose feed is no longer configured. This is the pure core of the instant
+    -play button's queue so the three regression rules it must honour --
+    de-dupe, played-filter, removed-feed-filter -- are testable in isolation.
+    """
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for eps in history_days:
+        for ep in eps or []:
+            key = _episode_key(ep)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            if key in played:
+                continue
+            if not _episode_is_configured(ep, configured_urls, configured_names):
+                continue
+            out.append(ep)
+    return out
+
+
+def _should_mark_played(
+    old_id: str | None,
+    new_id: str | None,
+    old_state: str | None,
+    new_state: str | None,
+) -> bool:
+    """Whether the OLD track should be marked played on a state change.
+
+    Playback moves off a track in two ways:
+      1. Advance/skip to a different track (media_content_id changes).
+      2. End of queue: the final episode has no "next" id, so playback goes to
+         idle/stopped/off while the id stays or clears. The listener used to
+         require old_id != new_id, which left the last episode of every queue
+         permanently unplayed (and re-queued next press). Treat a move from
+         "playing" into a stopped/idle state as finishing the old track too.
+    Pure predicate so these rules are unit-testable.
+    """
+    if not old_id:
+        return False
+    track_changed = bool(new_id) and new_id != old_id
+    playback_ended = (
+        not new_id or new_state in ("idle", "off", "standby", "stopped", None)
+    ) and old_state == "playing"
+    return track_changed or playback_ended
+
+
+# ---------------------------------------------------------------------------
 # Core pipeline (pure; safe to call from executor)
 # ---------------------------------------------------------------------------
 
@@ -858,7 +945,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     def _ep_key(ep: dict) -> str:
         """Stable per-episode key for the played set (guid, else audio_url)."""
-        return ep.get("guid") or ep.get("audio_url") or ""
+        return _episode_key(ep)
 
     async def _collect_unplayed_episodes() -> list[dict]:
         """All recorded episodes not yet played, oldest day first, in order.
@@ -868,23 +955,33 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         (so a repeated episode isn't queued twice), and drops any whose key is
         in the played set. No look-back cap: the full outstanding backlog is
         returned (the user can prune the queue if it's ever too large).
+
+        Episodes belonging to feeds no longer in the configured podcast list
+        are also excluded: removing a podcast means you don't want its episodes
+        anymore, so stale history for a removed feed (e.g. a show you dropped)
+        must not resurface in the backlog (the reported bug). Correlation is by
+        feed_url (the stable identity) with a fallback to name for pre-upgrade
+        history entries written before feed_url was recorded.
         """
         base_dir = _history_base_dir()
         dates = await hass.async_add_executor_job(_list_history_dates, base_dir)
         played = hass.data[DOMAIN].get("played", set())
-        out: list[dict] = []
-        seen: set[str] = set()
-        for date_str in dates:
-            eps = await _load_history_episodes(date_str)
-            for ep in eps:
-                key = _ep_key(ep)
-                if not key or key in seen:
-                    continue
-                seen.add(key)
-                if key in played:
-                    continue
-                out.append(ep)
-        return out
+
+        cfg = _entry_config(hass)
+        configured = cfg.get(CONF_PODCASTS) or []
+        configured_urls = {
+            p.get(CONF_FEED_URL) for p in configured if p.get(CONF_FEED_URL)
+        }
+        configured_names = {
+            p.get(CONF_NAME) for p in configured if p.get(CONF_NAME)
+        }
+
+        history_days = [
+            await _load_history_episodes(date_str) for date_str in dates
+        ]
+        return _select_unplayed_backlog(
+            history_days, played, configured_urls, configured_names
+        )
 
     # Single lock serialising the whole read-modify-write span of a build
     # (daily/intraday/manual) and the set_podcasts HWM reconcile, so concurrent
@@ -1694,7 +1791,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
 
     async def handle_remove_from_queue(call: ServiceCall) -> None:
-        """Remove one item at a 0-based queue position (Sonos)."""
+        """Remove one item at a 0-based queue position (Sonos).
+
+        Removing an item is an explicit "I don't want to hear this" signal, so
+        the episode is also marked *played* -- otherwise the instant-play button
+        (which queues the whole unplayed backlog from history) would simply
+        re-add it on the next press. Without this, manually removed episodes
+        reappear every time you play (the reported bug).
+        """
         cfg = _entry_config(hass)
         player = call.data.get(ATTR_PLAYER) or cfg.get(CONF_PLAYER)
         position = int(call.data.get(ATTR_POSITION, 0))
@@ -1707,12 +1811,48 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 f"integration (sonos.remove_from_queue); player '{player}' "
                 "does not support it."
             )
+
+        # Resolve which episode sits at this position BEFORE removing it, so we
+        # can mark it played. Reading the live queue also bounds-checks the
+        # position against the real queue (M3): a stale panel position past the
+        # end is rejected rather than silently acting on the wrong item.
+        live_ids = await _sonos_queue_ids(player)
+        if live_ids is not None:
+            if position >= len(live_ids):
+                raise HomeAssistantError(
+                    f"{LOG_PREFIX} Queue position {position} is out of range "
+                    f"(queue has {len(live_ids)} item(s)); refresh the panel "
+                    "and try again."
+                )
+            removed_url = live_ids[position]
+        else:
+            removed_url = None
+
         await hass.services.async_call(
             "sonos",
             "remove_from_queue",
             {"entity_id": player, "queue_position": position},
             blocking=True,
         )
+
+        # Mark the removed episode played so it isn't re-queued from history.
+        if removed_url:
+            key = hass.data[DOMAIN].get("url_to_key", {}).get(removed_url)
+            if not key:
+                await _refresh_url_to_key()
+                key = hass.data[DOMAIN].get("url_to_key", {}).get(removed_url)
+            if key:
+                played = hass.data[DOMAIN].setdefault("played", set())
+                if key not in played:
+                    played.add(key)
+                    await _async_save_played()
+                    _LOGGER.info(
+                        "%s remove_from_queue: marked removed episode played "
+                        "(%s) so it won't be re-queued.",
+                        LOG_PREFIX,
+                        removed_url,
+                    )
+
         _LOGGER.info(
             "%s remove_from_queue: removed position %d from %s.",
             LOG_PREFIX,
@@ -1806,8 +1946,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         new = event.data.get("new_state")
         old_id = old.attributes.get("media_content_id") if old else None
         new_id = new.attributes.get("media_content_id") if new else None
-        if not old_id or old_id == new_id:
-            return  # no change of track, nothing to mark
+        old_state = old.state if old else None
+        new_state = new.state if new else None
+
+        # Mark the OLD track played when playback moves off it -- either an
+        # advance/skip to a different track, or the end of the queue (the final
+        # episode goes to idle/stopped with no "next" id). See
+        # _should_mark_played for the exact rules (and the regression it fixes).
+        if not _should_mark_played(old_id, new_id, old_state, new_state):
+            return
 
         key = hass.data[DOMAIN].get("url_to_key", {}).get(old_id)
         if not key:
@@ -1817,7 +1964,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             await _refresh_url_to_key()
             key = hass.data[DOMAIN].get("url_to_key", {}).get(old_id)
         if not key:
-            return
+            return  # not one of our recorded episodes; ignore
 
         played = hass.data[DOMAIN].setdefault("played", set())
         if key not in played:
